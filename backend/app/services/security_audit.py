@@ -7,9 +7,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.security_audit import SecurityAuditLog
 
 
-_SENSITIVE_KEY = re.compile(r"(secret|password|token|api[_-]?key|private[_-]?key|authorization)", re.I)
+_SENSITIVE_KEY = re.compile(
+    r"(secret|password|token|api[_-]?key|private[_-]?key|authorization|cookie|credential|session)", re.I
+)
 _SENSITIVE_TEXT = re.compile(
-    r"(?i)(api[_-]?key|token|password|secret|authorization)=([^&\s]+)"
+    r"(?i)(api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|token|password|secret|authorization|cookie|session(?:id)?)\s*[:=]\s*([^&\s,;]+)"
+)
+_BEARER_TOKEN = re.compile(r"(?i)\b(Bearer)\s+[A-Za-z0-9._~+/-]+=*")
+_AUTH_BEARER = re.compile(r"(?i)(authorization\s*[:=]\s*Bearer\s+)[A-Za-z0-9._~+/-]+=*")
+_AWS_ACCESS_KEY = re.compile(r"\bAKIA[0-9A-Z]{16}\b")
+_JWT = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b")
+_PRIVATE_KEY_BLOCK = re.compile(
+    r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
+    re.S,
 )
 
 
@@ -21,7 +31,12 @@ def redact_audit_value(value: Any, key: str = "") -> Any:
     if isinstance(value, (list, tuple)):
         return [redact_audit_value(item) for item in value]
     if isinstance(value, str):
-        return _SENSITIVE_TEXT.sub(r"\1=[REDACTED]", value)
+        cleaned = _AUTH_BEARER.sub(r"\1[REDACTED]", value)
+        cleaned = _SENSITIVE_TEXT.sub(r"\1=[REDACTED]", cleaned)
+        cleaned = _BEARER_TOKEN.sub(r"\1 [REDACTED]", cleaned)
+        cleaned = _AWS_ACCESS_KEY.sub("[REDACTED]", cleaned)
+        cleaned = _JWT.sub("[REDACTED]", cleaned)
+        return _PRIVATE_KEY_BLOCK.sub("[REDACTED]", cleaned)
     if value is None or isinstance(value, (bool, int, float)):
         return value
     return str(value)

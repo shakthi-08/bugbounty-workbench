@@ -211,9 +211,15 @@ class ScanViewTests(unittest.TestCase):
         self.assertFalse(view.phase14_run_button.isEnabled())
         view.set_phase14_job({"id": 44, "assessment": "api", "status": "approved"})
         self.assertTrue(view.phase14_run_button.isEnabled())
+        view.set_phase14_job({"id": 44, "status": "approved"})
+        captured = []
+        view.request_api.connect(lambda *args: captured.append(args))
+        view._phase14_run()
+        self.assertIn("/api/44/run", captured[0][2])
 
     def test_phase15_controls_use_pending_approval_then_approved_states(self):
         view=ScanView()
+        view.set_projects([{"id": 3, "name": "Authorized project"}], 3)
         self.assertEqual(view.phase15_auth_button.text(), "Authentication")
         self.assertEqual(view.phase15_access_button.text(), "Authorization Candidates")
         self.assertEqual(view.phase15_vuln_button.text(), "Vulnerability Candidates")
@@ -223,6 +229,11 @@ class ScanViewTests(unittest.TestCase):
         self.assertFalse(view.phase15_run_button.isEnabled())
         view.set_phase15_job({"id":55,"assessment":"vulnerabilities","status":"approved"})
         self.assertTrue(view.phase15_run_button.isEnabled())
+        view.set_phase15_job({"id":55,"status":"approved"})
+        captured=[]
+        view.request_api.connect(lambda *args: captured.append(args))
+        view._phase15_run()
+        self.assertIn("/vulnerabilities/55/run",captured[0][2])
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ from app.services.finding_risk import (correlate_findings, normalize_finding, ri
                                        summarize_findings)
 from app.services.security_audit import write_audit_log
 from app.services.security_authorization import security_authorization
+from app.services.security_audit import redact_audit_value, sanitize_audit_target
 
 router = APIRouter(prefix="/projects/{project_id}", tags=["Finding Risk"])
 
@@ -47,9 +48,9 @@ async def _evidence_map(db: AsyncSession, findings: list[Finding]):
     evidences = list((await db.scalars(select(Evidence).where(Evidence.finding_id.in_(ids)).order_by(Evidence.id))).all())
     result = {}
     for evidence in evidences:
-        result.setdefault(evidence.finding_id, []).append({"id": evidence.id, "title": evidence.title,
+        result.setdefault(evidence.finding_id, []).append({"id": evidence.id, "title": redact_audit_value(evidence.title),
             "evidence_type": evidence.evidence_type, "job_id": evidence.job_id,
-            "result_id": evidence.result_id, "path_reference": evidence.path_reference,
+            "result_id": evidence.result_id, "path_reference": redact_audit_value(evidence.path_reference),
             "content_hash": evidence.content_hash})
     return result
 
@@ -63,17 +64,20 @@ def _evidence_for(row: Finding, rows: list[Finding], evidence_map: dict):
 def _public(row: Finding, normalized: dict, evidence_map: dict):
     related = [item for item in evidence_map.values() for item in item]
     return {"id": row.id, "project_id": row.project_id, "asset_id": row.asset_id, "job_id": row.job_id,
-        "title": row.title, "severity": row.severity, "status": row.status, "endpoint": row.endpoint,
-        "description": row.description, "evidence": row.evidence, "evidence_references": related,
-        "category": row.category, "confidence": row.confidence, "remediation": row.remediation,
+        "title": redact_audit_value(row.title), "severity": row.severity, "status": row.status,
+        "endpoint": sanitize_audit_target(row.endpoint),
+        "description": redact_audit_value(row.description), "evidence": redact_audit_value(row.evidence),
+        "evidence_references": related,
+        "category": row.category, "confidence": row.confidence,
+        "remediation": redact_audit_value(row.remediation),
         "fingerprint": row.fingerprint, "identity_fingerprint": normalized["identity_fingerprint"],
         "canonical_finding_id": row.canonical_finding_id, "occurrence_count": row.occurrence_count,
         "risk_score": row.risk_score if row.risk_score is not None else normalized["risk_score"],
         "priority": row.priority or normalized["priority"],
         "risk_explanation": row.risk_explanation or normalized["risk_explanation"],
         "correlation_groups": row.correlation_groups or normalized["correlation_groups"],
-        "normalized": {key: normalized[key] for key in
-            ("category", "condition", "endpoint", "severity", "confidence", "original")},
+        "normalized": redact_audit_value({key: normalized[key] for key in
+            ("category", "condition", "endpoint", "severity", "confidence", "original")}),
         "condition": normalized["condition"],
         "created_at": row.created_at, "updated_at": row.updated_at}
 

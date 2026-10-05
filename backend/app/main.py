@@ -17,6 +17,7 @@ from app.api.recon_correlation import router as recon_correlation_router
 from app.api.advanced_assessment import router as advanced_assessment_router
 
 from app.core.database import engine, verify_database_schema
+from app.core.request_limits import RequestBodyLimitMiddleware
 from app.services import recon_execution
 
 
@@ -33,10 +34,11 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Bug Bounty Workbench",
-    version="0.1.0",
+    version="1.0.0",
     description="Scope-aware security assessment platform",
     lifespan=lifespan,
 )
+app.add_middleware(RequestBodyLimitMiddleware, max_request_bytes=2 * 1024 * 1024)
 
 app.include_router(projects_router)
 app.include_router(scopes_router)
@@ -57,7 +59,7 @@ app.include_router(advanced_assessment_router)
 async def root():
     return {
         "name": "Bug Bounty Workbench",
-        "version": "0.1.0",
+        "version": "1.0.0",
         "status": "online",
     }
 

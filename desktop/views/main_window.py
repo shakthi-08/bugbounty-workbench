@@ -15,6 +15,7 @@ from ..widgets.status_pill import StatusPill
 from .assets_view import AssetsView
 from .dashboard_view import DashboardView
 from .findings_view import FindingsView
+from .evidence_view import EvidenceView
 from .projects_view import ProjectsView
 from .reports_view import ReportsView
 from .scan_view import ScanView
@@ -28,7 +29,8 @@ class MainWindow(QMainWindow):
         ("Scopes", "scopes"),
         ("Assets", "assets"),
         ("Findings", "findings"),
-        ("Scan", "scan"),
+        ("Evidence", "evidence"),
+        ("Recon & Assessment", "scan"),
         ("Reports", "reports"),
     ]
 
@@ -131,8 +133,9 @@ class MainWindow(QMainWindow):
             "Scopes": ScopesView(),
             "Assets": AssetsView(),
             "Findings": FindingsView(),
+            "Evidence": EvidenceView(),
             "Reports": ReportsView(),
-            "Scan": ScanView(),
+            "Recon & Assessment": ScanView(),
         }
         for view in self.views.values():
             self.stack.addWidget(view)
@@ -145,8 +148,9 @@ class MainWindow(QMainWindow):
         self.scopes_view = self.views["Scopes"]
         self.assets_view = self.views["Assets"]
         self.findings_view = self.views["Findings"]
+        self.evidence_view = self.views["Evidence"]
         self.reports_view = self.views["Reports"]
-        self.scan_view = self.views["Scan"]
+        self.scan_view = self.views["Recon & Assessment"]
 
     def _select_page(self, name: str):
         view = self.views.get(name)
@@ -180,12 +184,16 @@ class MainWindow(QMainWindow):
         self._request("assets", f"/projects/{project_id}/assets")
         self._request("finding_analysis", f"/projects/{project_id}/findings/analysis")
         self._request("finding_summary", f"/projects/{project_id}/risk-summary")
+        self._request("evidence", f"/projects/{project_id}/evidence?limit=500")
         self._request("scan_correlation", f"/projects/{project_id}/recon/correlation")
 
     def _request(self, key: str, path: str, method: str = "GET", payload=None):
         # ScanView signals are ordered (key, method, path, payload).
         if path in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
             key, method, path, payload = key, path, method, payload
+        parts = path.lstrip("/").split("/")
+        if len(parts) > 1 and parts[0] == "projects" and parts[1].isdigit():
+            key = f"{key}::project:{parts[1]}"
         worker = ApiWorker(self.api_client, key, path, method, payload)
         self._workers.add(worker)
         worker.signals.succeeded.connect(self._on_request_succeeded)
@@ -197,6 +205,9 @@ class MainWindow(QMainWindow):
         self._workers.discard(worker)
 
     def _on_request_succeeded(self, key: str, data):
+        key, project_id = self._unpack_project_key(key)
+        if project_id is not None and project_id != self.project_id:
+            return
         if key == "health":
             self.connection_pill.set_connected(True, "Backend connected")
             self.dashboard_view.set_backend_status(True, "Connected")
@@ -226,6 +237,8 @@ class MainWindow(QMainWindow):
             self._update_dashboard_counts()
         elif key == "finding_summary":
             self.findings_view.set_summary(data)
+        elif key == "evidence":
+            self.evidence_view.set_items(data)
         elif key == "finding_correlate":
             self.findings_view.set_correlation_result(data)
             self._request("finding_analysis", f"/projects/{self.project_id}/findings/analysis")
@@ -293,6 +306,7 @@ class MainWindow(QMainWindow):
                     for row in findings))
             self._send("finding_analysis", "GET", f"/projects/{self.current_project['id']}/findings/analysis")
             self._send("finding_summary", "GET", f"/projects/{self.current_project['id']}/risk-summary")
+            self._request("evidence", f"/projects/{self.current_project['id']}/evidence?limit=500")
         elif key == "phase14_run":
             self.scan_view.execution_output.setPlainText(
                 f"Assessment {data.get('status')}: {data.get('endpoints_inspected', 0)} endpoints, "
@@ -302,6 +316,7 @@ class MainWindow(QMainWindow):
                     for row in data.get('findings', [])))
             self._send("finding_analysis", "GET", f"/projects/{self.current_project['id']}/findings/analysis")
             self._send("finding_summary", "GET", f"/projects/{self.current_project['id']}/risk-summary")
+            self._request("evidence", f"/projects/{self.current_project['id']}/evidence?limit=500")
         elif key == "phase9_run":
             rows = (data or {}).get("findings", [])
             self.scan_view.execution_output.setPlainText("\n".join(
@@ -310,8 +325,12 @@ class MainWindow(QMainWindow):
             ) or "Assessment completed with no findings.")
             self._send("finding_analysis", "GET", f"/projects/{self.current_project['id']}/findings/analysis")
             self._send("finding_summary", "GET", f"/projects/{self.current_project['id']}/risk-summary")
+            self._request("evidence", f"/projects/{self.current_project['id']}/evidence?limit=500")
 
     def _on_request_failed(self, key: str, message: str):
+        key, project_id = self._unpack_project_key(key)
+        if project_id is not None and project_id != self.project_id:
+            return
         if key == "health":
             self.connection_pill.set_connected(False, "Backend unavailable")
             self.dashboard_view.set_backend_status(False, "Unavailable")
@@ -328,10 +347,23 @@ class MainWindow(QMainWindow):
             self.assets_view.set_error(message)
         elif key in {"findings", "finding_analysis", "finding_summary", "finding_correlate"}:
             self.findings_view.set_error(message)
+        elif key == "evidence":
+            self.evidence_view.set_error(message)
         elif key.startswith("report_"):
             self.reports_view.set_error(message)
-        elif key.startswith("scan_"):
+        elif key.startswith(("scan_", "phase9_", "phase14_", "phase15_")):
             self.scan_view.job_status.setText(f"Request failed: {message}")
+
+    @staticmethod
+    def _unpack_project_key(key: str):
+        marker = "::project:"
+        if marker not in key:
+            return key, None
+        base, raw_project_id = key.rsplit(marker, 1)
+        try:
+            return base, int(raw_project_id)
+        except ValueError:
+            return key, None
 
     def _update_projects(self, data):
         previous_project_id = self.project_id
@@ -352,6 +384,7 @@ class MainWindow(QMainWindow):
             self.scopes_view.set_items([])
             self.assets_view.set_items([])
             self.findings_view.set_items([])
+            self.evidence_view.set_items([])
         self.projects_view.set_projects(self.projects, self.project_id)
         self.dashboard_view.set_project(
             self.current_project.get("name") if self.current_project else None
@@ -367,6 +400,7 @@ class MainWindow(QMainWindow):
             self.scopes_view.set_items([])
             self.assets_view.set_items([])
             self.findings_view.set_items([])
+            self.evidence_view.set_items([])
             self.dashboard_view.set_counts(0, 0, 0)
 
     def _select_project(self, project_id: int):
@@ -385,6 +419,7 @@ class MainWindow(QMainWindow):
         self.scopes = None
         self.assets = []
         self.findings = []
+        self.evidence_view.set_items([])
         self.scan_view.set_context(self.current_project, None)
         self.scan_view.set_projects(self.projects, self.project_id)
         self._request_project_data()

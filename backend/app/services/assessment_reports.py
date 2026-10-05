@@ -32,6 +32,9 @@ METHODOLOGY = [
     "Security header/configuration assessment reports Phase 9 findings derived from stored observations.",
     "Finding normalization, canonical identity, correlation, and risk use the deterministic Phase 10 implementation.",
     "Evidence consists of safe references to existing Evidence records; report generation does not read evidence files.",
+    "Phase 13 includes stored results from bounded subdomain, fixed-path HTTP, and selected TCP service checks.",
+    "Phase 14 web and API observations use authorized stored surfaces; report generation performs no new requests.",
+    "Phase 15 authentication, session, authorization, and vulnerability records are heuristic candidates requiring manual verification.",
 ]
 
 LIMITATIONS = [
@@ -50,7 +53,7 @@ _SECRET_TEXT = re.compile(r"(?i)\b(authorization|proxy-authorization|set-cookie|
 def _safe_text(value):
     if value is None:
         return None
-    value = str(value)
+    value = str(redact_audit_value(value))
     value = _SECRET_TEXT.sub(lambda match: f"{match.group(1)}=[REDACTED]", value)
     value = re.sub(r"(?i)(https?://[^\s/?#]+)[^\s]*[?&](?:token|key|password|secret)=[^&\s]+", r"\1?[REDACTED]", value)
     return value[:10000]
@@ -176,8 +179,14 @@ async def build_report_snapshot(db: AsyncSession, assessment: Assessment) -> dic
             "confidence": row.confidence, "risk_score": risk_score, "priority": priority,
             "asset_id": row.asset_id,
             "asset": _safe_text(asset_by_id[row.asset_id].value) if row.asset_id in asset_by_id else None,
-            "endpoint": normalized["endpoint"] or None, "correlation_groups": row.correlation_groups or groups,
+            "endpoint": _safe_text(normalized["endpoint"]) or None,
+            "correlation_groups": row.correlation_groups or groups,
             "description": _safe_text(row.description), "evidence": _safe_text(row.evidence),
+            "verification_status": (
+                "Candidate requiring manual verification"
+                if re.search(r"candidate requiring manual verification|manual verification required", row.description or "", re.I)
+                else "Recorded observation"
+            ),
             "remediation": _safe_text(row.remediation), "risk_explanation": _safe_text(explanation),
             "occurrence_count": max(row.occurrence_count or 1, len(related)),
             # This list already contains only canonical rows. Do not pass the
@@ -327,6 +336,7 @@ def render_markdown(report: dict) -> str:
     for finding in report["findings"]:
         lines += [f"### {_md(finding['title'])}", "", f"- Severity: {_md(finding['severity'])} | Confidence: {_md(finding['confidence'])}",
             f"- Risk: {finding['risk_score']}/100 | Priority: {_md(finding['priority'])}",
+            f"- Verification: {_md(finding['verification_status'])}",
             f"- Category: {_md(finding['category'])} | Asset: {_md(finding['asset'])} | Endpoint: {_md(finding['endpoint'])}",
             f"- Correlation: {_md(', '.join(finding['correlation_groups']) or 'none')} | Occurrences: {finding['occurrence_count']}",
             f"- Condition: {_md(finding['condition'])}", f"- Evidence: {_md(finding['evidence'])}",

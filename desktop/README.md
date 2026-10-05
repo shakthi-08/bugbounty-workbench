@@ -8,8 +8,9 @@ API base is `http://127.0.0.1:8000`; override it with
 From the repository root, run `setup_desktop.ps1` once, start the backend in a
 separate PowerShell window with `start_backend.ps1`, and run
 `start_desktop.ps1`. If the backend is unavailable, the window remains open
-and reports its connection state. Recon operations remain explicit, scoped,
-approval-gated actions in the existing Scan workflow.
+and reports its connection state. Recon and security assessment operations are
+explicit, scoped, approval-gated actions in the Recon & Assessment workflow.
+Findings and sanitized evidence are browsable from their project-scoped pages.
 
 For a release package, install the locked packaging dependencies into the
 desktop environment and run `build_windows.ps1`. The resulting

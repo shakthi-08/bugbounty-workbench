@@ -13,6 +13,7 @@ from .views.main_window import MainWindow
 def main() -> int:
     application = QApplication(sys.argv)
     application.setApplicationName("Bug Bounty Workbench")
+    application.setApplicationVersion("1.0.0")
     application.setOrganizationName("Bug Bounty Workbench")
 
     api_client = ApiClient()

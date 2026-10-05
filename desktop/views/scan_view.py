@@ -11,7 +11,8 @@ class ScanView(BaseView):
     request_api = Signal(str, str, str, object)
 
     def __init__(self, parent=None):
-        super().__init__("Guided Assessment", "Review the authorized target and job definition before explicit approval.", parent)
+        super().__init__("Reconnaissance & Security Assessment",
+                         "Run bounded reconnaissance, web/API checks, and security candidate assessments against authorized project assets.", parent)
         form = QFormLayout()
         self.project_selector = QComboBox()
         self.domain_selector = QComboBox()
@@ -556,6 +557,9 @@ class ScanView(BaseView):
 
     def set_phase14_job(self, job):
         if not job: return
+        previous = getattr(self, "phase14_job", None) or {}
+        if "assessment" not in job and previous.get("id") == job.get("id"):
+            job = {**job, "assessment": previous.get("assessment", "web")}
         self.phase14_job = job
         status = job.get("status", "unknown")
         self.job_status.setText(f"Phase 14 {job.get('assessment', 'assessment')} #{job.get('id')}: {status.upper()}")
@@ -586,6 +590,9 @@ class ScanView(BaseView):
 
     def set_phase15_job(self, job):
         if not job: return
+        previous = getattr(self, "phase15_job", None) or {}
+        if "assessment" not in job and previous.get("id") == job.get("id"):
+            job = {**job, "assessment": previous.get("assessment", "authentication")}
         self.phase15_job=job
         status=job.get("status", "unknown")
         self.job_status.setText(f"Phase 15 {job.get('assessment', 'security')} #{job.get('id')}: {status.upper()}")

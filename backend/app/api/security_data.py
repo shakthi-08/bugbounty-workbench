@@ -13,7 +13,7 @@ from app.models.project import Project
 from app.models.security_audit import SecurityAuditLog
 from app.models.security_job import SecurityJob
 from app.models.security_result import SecurityResult
-from app.services.security_audit import write_audit_log
+from app.services.security_audit import redact_audit_value, sanitize_audit_target, write_audit_log
 from app.services.security_authorization import security_authorization
 
 router = APIRouter(tags=["Security Data"])
@@ -111,6 +111,31 @@ def _require_local_reference(value: str | None) -> None:
         raise HTTPException(status_code=422, detail="Evidence references must be local paths or identifiers.")
 
 
+def _security_result_response(row: SecurityResult) -> dict[str, Any]:
+    return {
+        "id": row.id, "project_id": row.project_id, "job_id": row.job_id,
+        "tool_id": row.tool_id, "module_id": row.module_id,
+        "target": sanitize_audit_target(row.target), "result_type": row.result_type,
+        "severity": row.severity, "title": redact_audit_value(row.title),
+        "summary": redact_audit_value(row.summary),
+        "raw_reference": sanitize_audit_target(row.raw_reference),
+        "normalized_data": redact_audit_value(row.normalized_data or {}),
+        "created_at": row.created_at,
+    }
+
+
+def _evidence_response(row: Evidence) -> dict[str, Any]:
+    return {
+        "id": row.id, "project_id": row.project_id, "job_id": row.job_id,
+        "result_id": row.result_id, "finding_id": row.finding_id,
+        "evidence_type": row.evidence_type, "title": redact_audit_value(row.title),
+        "description": redact_audit_value(row.description),
+        "path_reference": redact_audit_value(row.path_reference),
+        "content_hash": row.content_hash,
+        "metadata_json": redact_audit_value(row.metadata_json or {}), "created_at": row.created_at,
+    }
+
+
 async def _project_exists(db: AsyncSession, project_id: int) -> None:
     if await db.get(Project, project_id) is None:
         raise HTTPException(status_code=404, detail="Project not found.")
@@ -141,10 +166,12 @@ async def create_security_result(project_id: int, data: SecurityResultCreate,
         await db.commit()
         raise HTTPException(status_code=403, detail=f"Result target blocked by scope: {authorization.reason}")
     result = SecurityResult(project_id=project_id, job_id=job.id, tool_id=data.tool_id,
-                            module_id=data.module_id, target=data.target.strip(),
+                            module_id=data.module_id, target=sanitize_audit_target(data.target.strip()),
                             result_type=data.result_type, severity=data.severity,
-                            title=data.title.strip(), summary=data.summary,
-                            raw_reference=data.raw_reference, normalized_data=data.normalized_data)
+                            title=redact_audit_value(data.title.strip()),
+                            summary=redact_audit_value(data.summary),
+                            raw_reference=sanitize_audit_target(data.raw_reference),
+                            normalized_data=redact_audit_value(data.normalized_data))
     db.add(result)
     await db.flush()
     await write_audit_log(db, project_id=project_id, user="local-user",
@@ -153,7 +180,7 @@ async def create_security_result(project_id: int, data: SecurityResultCreate,
                           details={"result_type": result.result_type, "title": result.title})
     await db.commit()
     await db.refresh(result)
-    return result
+    return _security_result_response(result)
 
 
 @router.get("/projects/{project_id}/security-results", response_model=list[SecurityResultResponse])
@@ -168,7 +195,8 @@ async def list_security_results(project_id: int, limit: int = Query(100, ge=1, l
     if asset_id is not None:
         statement = statement.join(SecurityJob, SecurityJob.id == SecurityResult.job_id).where(
             SecurityJob.asset_id == asset_id, SecurityJob.project_id == project_id)
-    return list((await db.scalars(statement.order_by(SecurityResult.id).limit(limit))).all())
+    rows = (await db.scalars(statement.order_by(SecurityResult.id).limit(limit))).all()
+    return [_security_result_response(row) for row in rows]
 
 
 @router.get("/projects/{project_id}/security-results/{result_id}", response_model=SecurityResultResponse)
@@ -177,7 +205,7 @@ async def get_security_result(project_id: int, result_id: int, db: AsyncSession 
         SecurityResult.id == result_id, SecurityResult.project_id == project_id))
     if result is None:
         raise HTTPException(status_code=404, detail="Security result not found.")
-    return result
+    return _security_result_response(result)
 
 
 @router.post("/projects/{project_id}/evidence", response_model=EvidenceResponse,
@@ -210,9 +238,10 @@ async def create_evidence(project_id: int, data: EvidenceCreate, db: AsyncSessio
         raise HTTPException(status_code=422, detail="Evidence must be associated with a job, result, or finding.")
     evidence = Evidence(project_id=project_id, job_id=job.id if job else None,
                         result_id=result.id if result else None, finding_id=data.finding_id,
-                        evidence_type=data.evidence_type, title=data.title.strip(),
-                        description=data.description, path_reference=data.path_reference,
-                        content_hash=data.content_hash, metadata_json=data.metadata)
+                        evidence_type=data.evidence_type, title=redact_audit_value(data.title.strip()),
+                        description=redact_audit_value(data.description),
+                        path_reference=redact_audit_value(data.path_reference),
+                        content_hash=data.content_hash, metadata_json=redact_audit_value(data.metadata))
     db.add(evidence)
     await db.flush()
     await write_audit_log(db, project_id=project_id, user="local-user",
@@ -221,15 +250,16 @@ async def create_evidence(project_id: int, data: EvidenceCreate, db: AsyncSessio
                           details={"evidence_type": evidence.evidence_type, "title": evidence.title})
     await db.commit()
     await db.refresh(evidence)
-    return evidence
+    return _evidence_response(evidence)
 
 
 @router.get("/projects/{project_id}/evidence", response_model=list[EvidenceResponse])
 async def list_evidence(project_id: int, limit: int = Query(100, ge=1, le=500),
                         db: AsyncSession = Depends(get_db)):
     await _project_exists(db, project_id)
-    return list((await db.scalars(select(Evidence).where(Evidence.project_id == project_id)
-                                  .order_by(Evidence.id).limit(limit))).all())
+    rows = (await db.scalars(select(Evidence).where(Evidence.project_id == project_id)
+                             .order_by(Evidence.id.desc()).limit(limit))).all()
+    return [_evidence_response(row) for row in rows]
 
 
 @router.get("/projects/{project_id}/security-audit", response_model=list[AuditResponse])
@@ -240,5 +270,5 @@ async def list_security_audit(project_id: int, limit: int = Query(200, ge=1, le=
         SecurityAuditLog.project_id == project_id).order_by(SecurityAuditLog.id.desc()).limit(limit))).all()
     return [{"id": row.id, "project_id": row.project_id, "user": row.user,
              "action": row.action, "entity_type": row.entity_type,
-             "entity_id": row.entity_id, "target": row.target,
-             "details": row.details_json, "created_at": row.created_at} for row in rows]
+             "entity_id": row.entity_id, "target": sanitize_audit_target(row.target),
+             "details": redact_audit_value(row.details_json or {}), "created_at": row.created_at} for row in rows]

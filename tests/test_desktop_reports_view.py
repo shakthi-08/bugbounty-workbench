@@ -90,6 +90,15 @@ class ReportsViewTests(unittest.TestCase):
         self.app.processEvents()
         window.nav_buttons["Reports"].click()
         self.assertIs(window.stack.currentWidget(), window.reports_view)
+        self.assertIn("Evidence", window.nav_buttons)
+        window.nav_buttons["Evidence"].click()
+        self.assertIs(window.stack.currentWidget(), window.evidence_view)
+        window.project_id = 2
+        window.evidence_view.set_items([{"id": 2, "evidence_type": "text", "title": "Current project"}])
+        window._on_request_succeeded("evidence::project:1", [{"id": 1, "title": "Stale project"}])
+        self.assertEqual(window.evidence_view.rows[0]["id"], 2)
+        window._on_request_failed("phase15_run::project:2", "Approval required")
+        self.assertIn("Approval required", window.scan_view.job_status.text())
         window.close()
 
     def test_missing_backend_is_reported_without_crashing(self):

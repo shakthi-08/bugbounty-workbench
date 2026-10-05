@@ -1,109 +1,134 @@
-# Bug Bounty Workbench
+# Bug Bounty Workbench V1
 
-Bug Bounty Workbench is a Windows-local security assessment application. Its
-FastAPI backend uses SQLAlchemy, SQLite, and Alembic. A native PySide6 desktop
-application communicates with the backend through a loopback-only API client.
-The desktop does not access the database directly.
+Bug Bounty Workbench is a local Windows application for organizing authorized
+security assessments. It helps track project scope and assets, collect bounded
+reconnaissance observations, assess discovered web and API surfaces, record
+security candidates with evidence, and prepare project reports. Heuristic
+candidates are observations for review; they are not claims of confirmed
+exploitation.
 
-## Requirements and installation
+## Architecture
 
-Use 64-bit Python 3.13 on Windows with the Python Launcher (`py`). From a
-PowerShell window in the repository directory:
+The native PySide6 desktop application talks to a separate FastAPI backend on
+loopback. The backend uses asynchronous SQLAlchemy, SQLite, and Alembic. The
+backend owns project isolation, current-scope authorization, approval checks,
+bounded execution, audit events, results, evidence, finding correlation and
+risk, and report generation. The desktop does not connect to SQLite directly.
+
+```text
+PySide6 desktop -> loopback FastAPI -> SQLAlchemy async -> SQLite
+                                           Alembic migrations
+```
+
+The application version is 1.0.0. The current schema head is
+`d6249ab317e1`; Phase 14, Phase 15, and V1 integration required no schema
+migration beyond the existing history.
+
+## Windows setup
+
+Use 64-bit Python 3.13 with the Python Launcher. In PowerShell at the
+repository root:
 
 ```powershell
 .\setup_backend.ps1
 .\setup_desktop.ps1
+.\migrate_database.ps1
 ```
 
-These create separate virtual environments and install the exact dependency
-versions in the checked-in lock files. The setup scripts do not download
-external tools or alter system configuration. `backend\requirements.txt` and
-`desktop\requirements.txt` list the direct application dependencies;
-`backend\requirements-dev.lock`, `desktop\requirements.lock`, and
-`desktop\requirements-packaging.lock` pin the reproducible Windows environment.
+The setup scripts create separate backend and desktop virtual environments
+and install dependencies from the checked-in lock files. They do not install
+external reconnaissance tools or change system configuration.
 
-## Database and configuration
-
-By default, backend data is stored at:
-
-```text
-%LOCALAPPDATA%\BugBountyWorkbench\bugbounty.db
-```
-
-If `LOCALAPPDATA` is missing, the application uses the current user's
-`AppData\Local\BugBountyWorkbench` directory. `BUGBOUNTY_DATA_DIR` overrides
-the directory. Absolute values are resolved directly; relative values are
-resolved from the backend package directory, independently of the shell's
-working directory. Paths containing spaces are supported. Running Alembic
-creates the selected directory if needed. The API refuses to start against an
-unmigrated or wrong-revision database.
-
-The repository's existing development database is
-`backend\bugbounty.db`. To explicitly continue using it, set the same data
-directory in the migration and backend PowerShell sessions:
+By default, data is stored in
+`%LOCALAPPDATA%\BugBountyWorkbench\bugbounty.db`. `BUGBOUNTY_DATA_DIR` can
+select another directory. Paths with spaces are supported. The repository's
+development database is `backend\bugbounty.db`; to use it, set the same
+directory before migration and backend startup:
 
 ```powershell
 $env:BUGBOUNTY_DATA_DIR = (Join-Path $PWD "backend")
 .\migrate_database.ps1
+.\start_backend.ps1
 ```
 
-In the PowerShell window used to run the backend, set the same value before
-starting it. Otherwise the normal `%LOCALAPPDATA%` default is used. Never
-delete or replace an existing database as part of setup.
+Never replace or delete an existing database to install the application. The
+backend verifies the selected database revision during startup.
 
-Manual migration commands, run from the repository root:
+## Run the application
 
-```powershell
-Push-Location backend
-try {
-    .\.venv\Scripts\python.exe -m alembic -c alembic.ini upgrade head
-    .\.venv\Scripts\python.exe -m alembic -c alembic.ini current
-} finally { Pop-Location }
-```
-
-Current schema head: `d6249ab317e1` (Phase 13). The migration registers the
-built-in TCP service-awareness adapter in the existing tool catalog; it does
-not create a parallel results or evidence schema.
-
-## Start the application
-
-Start the backend in one PowerShell window:
+Start the backend in one PowerShell window and the desktop in another:
 
 ```powershell
 .\start_backend.ps1
 ```
 
-Start the desktop application in another:
-
 ```powershell
 .\start_desktop.ps1
 ```
 
-The backend binds to `127.0.0.1:8000`; the desktop defaults to that URL and
-accepts loopback addresses only. Set `BUGBOUNTY_API_BASE_URL` to another local
-loopback port if required. The desktop does not launch a backend silently.
-Health is available at `http://127.0.0.1:8000/health` and OpenAPI at
-`http://127.0.0.1:8000/openapi.json`.
+The backend binds to `127.0.0.1:8000`. The desktop accepts loopback API URLs
+only and does not launch the backend silently. Health is available at
+`http://127.0.0.1:8000/health`; API documentation is at
+`http://127.0.0.1:8000/docs`.
 
-## Windows desktop package
+The desktop workflow is Dashboard, Projects, Scopes, Assets, Findings,
+Evidence, Recon & Assessment, and Reports. Assessment controls use project assets
+and stored observations rather than a generic target URL field. Security
+operations show pending approval, approved, and execution status. Assessment
+results refresh findings and evidence in the selected project.
 
-The supported package is a PyInstaller onedir bundle. It includes the PySide6
-runtime and desktop assets but keeps the backend as a separately installed and
-started process. From the repository root:
+## Assessment capabilities
 
-```powershell
-desktop\.venv\Scripts\python.exe -m pip install -r desktop\requirements-packaging.lock
-.\build_windows.ps1
-```
+* **Project and scope management:** project-owned scopes and assets, included
+  and excluded rules, and explicit target scope decisions.
+* **Reconnaissance:** bounded DNS enrichment, HTTP observations, TLS and
+  certificate inspection, technology indicators, fixed-path web surface
+  discovery, and selected TCP service awareness.
+* **Web and API assessment:** inspection of authorized stored surfaces;
+  bounded observations of cookie attributes, CORS, redirects, disclosure,
+  methods, and API documentation metadata. The existing Phase 9 assessment
+  handles security-header gaps.
+* **Authentication and authorization:** observed authentication and session
+  surfaces, cookie observations, documented security requirements, and
+  access-control candidates such as sensitive operations lacking declared
+  authentication metadata or resource identifier parameters.
+* **Vulnerability candidates:** safe observation-based indicators for HTML
+  reflection, database or parser errors, path and fetch parameters, redirects,
+  upload surfaces, and secret-like or internal information disclosure.
+* **Findings and reporting:** deterministic normalization, deduplication,
+  correlation, severity, confidence and risk prioritization, linked evidence,
+  audit history, assessment summaries, and JSON, Markdown, and HTML export.
 
-The executable is `dist\BugBountyWorkbench\BugBountyWorkbench.exe`. Start the
-backend with `start_backend.ps1` before opening the packaged desktop app. The
-package contains no credentials and makes no external connections.
+All assessment requests are project-scoped SecurityJobs. The backend checks
+project ownership and current scope at execution, enforces approval where
+network activity is involved, applies request and result caps, and records
+audit events. Evidence and exported reports redact sensitive fields and keep
+bounded useful context. Reports use stored authorized observations and do
+not perform network activity.
 
-## Test commands
+## Security boundaries and limitations
 
-Run the full backend functional suites, recon regressions, and desktop suite
-from the repository root:
+Use this application only for assets covered by explicit authorization and
+the project's current scope. Active operations require an approved job and
+are bounded by server-side controls. HTTP operations use timeouts, response
+caps, and bounded redirects; API document and endpoint counts are capped.
+Incoming API request bodies are limited to 2 MiB. Fixed-path discovery is
+limited and does not recursively crawl.
+
+The application does not provide brute force, password spraying, credential
+stuffing, credential harvesting, token theft, unrestricted crawling, arbitrary
+URL scanning, internal-network probing, arbitrary commands or shell access,
+destructive HTTP methods, state changes, ID enumeration, privilege escalation,
+or automated exploitation. It does not upload test files or send exploit
+payloads. Phase 15 candidates require manual verification when indicated;
+missing metadata or a suspicious parameter name alone does not prove a
+vulnerability. Risk scores support prioritization and do not establish
+exploitability. Absence of a finding does not establish security.
+
+## Development and verification
+
+Run the backend, recon, Phase 16, and desktop test suites from the repository
+root:
 
 ```powershell
 backend\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_phase*.py" -v
@@ -111,125 +136,21 @@ backend\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_recon*.p
 desktop\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_desktop*.py" -v
 ```
 
-## Security model and limitations
+The test network operations use deterministic fakes; the test suite does not
+scan external hosts. Additional local checks include Python compilation,
+`pip check`, `alembic upgrade head`, and `alembic check` from `backend`.
 
-Projects own their scopes, assets, findings, jobs, assessments, evidence, and
-audit records. Security jobs use the existing authorization and explicit
-approval workflow; target scope is rechecked before execution. Recon remains
-bounded to DNS, HTTP, TLS, fixed-path endpoint inspection, and TCP service
-awareness. The desktop exposes no arbitrary URL scanning or shell execution
-control.
+## Windows package
 
-## Phase 13 reconnaissance
+The supported desktop build uses PyInstaller onedir. It bundles the desktop,
+PySide6 runtime, and resources; the FastAPI backend remains a separately
+installed and started process:
 
-Phase 13 extends the existing approved SecurityJob workflow. Passive Subfinder
-results are capped at 100 (the desktop can select a lower cap), deduplicated,
-checked against current project scope, restricted to descendants of the
-selected root, and materialized as existing domain assets. Subfinder must be
-installed and configured locally; it is a passive source adapter, not a
-wordlist enumerator.
-
-Web endpoint inspection chooses up to 12 paths from a fixed built-in path list.
-It keeps same-host authorization checks, at most two redirects, eight-second
-per-request bounds, a 60-second overall cap, and the existing bounded response
-size. TCP service awareness requires an existing authorized IP asset and checks
-only TCP ports 22, 80, 443, 445, 8080, and 8443, with at most a three-second
-connection timeout. Port requests are individually reauthorized and audited.
-No UDP, ranges, recursive crawling, fuzzing, credentials, or exploitation are
-provided. Observations are not proof of vulnerabilities.
-
-Stored assets, observations, and canonical findings can be inspected through
-`GET /projects/{project_id}/recon/correlation`. The response is a deterministic,
-read-only grouping by observed hostname and retains observation/job provenance;
-it does not create findings or alter Phase 10 risk values. The Scan view exposes
-the same bounded result/path/port controls before job approval.
-
-Evidence and audit use existing database structures. Assessments and JSON,
-Markdown, and HTML reports use stored observations only. Report generation
-performs no network requests, omits filesystem paths and sensitive values, and
-does not treat a missing finding as proof of security. Findings describe the
-implemented observations and deterministic analysis; exploitability is not
-guaranteed and can require manual validation. This local Workbench does not
-provide unrestricted offensive scanning or public SaaS authentication.
-
-## Phase 14 advanced web and API assessment
-
-The Scan view can request a web or API assessment for a selected project asset.
-Each request is a SecurityJob, needs explicit approval, and is checked against
-current project scope both when approved and when run. Assessments inspect at
-most 100 stored endpoint observations and create deduplicated, evidence-backed
-candidate findings through the existing Finding and Evidence tables. Web
-checks cover observed session-cookie attributes, CORS, advertised unusual
-methods, HTTP-to-HTTPS observations, and server disclosure. Existing Phase 9
-security-header assessment remains the source for header-gap analysis.
-
-API metadata is normalized from an OpenAPI document already present in stored
-observation metadata; extraction caps the document at 64 KiB, paths at 100,
-and parameters at 50 per operation. Query parameters in observed URLs are
-listed as input-surface metadata. Malformed specifications are safely ignored.
-The Phase 14 API does not accept arbitrary URLs and does not make network
-requests: API documentation must first be captured by the existing approved,
-fixed-path web-surface workflow. Credentials and cookie values are not retained
-by the Phase 14 analyzers. These are conservative candidates requiring manual
-validation, not proof of exploitability. No fuzzing, destructive methods,
-credential attacks, recursive crawl, or command execution is provided.
-
-The new project-scoped endpoints are `POST /projects/{project_id}/security-assessments/{web|api}`,
-`POST /projects/{project_id}/security-assessments/{web|api}/{job_id}/approve`,
-`POST /projects/{project_id}/security-assessments/{web|api}/{job_id}/run`, and
-`GET /projects/{project_id}/security-assessments/{web|api}`. This phase adds no
-database migration. Tests are in `tests/test_phase14.py`.
-
-## Phase 15 authentication, authorization, and vulnerability candidates
-
-Phase 15 extends the same approved SecurityJob assessment routes with
-`authentication`, `authorization`, and `vulnerabilities` kinds. The Scan view
-requests one for a selected project asset, then uses the existing approve and
-run controls. Project ownership and current scope are rechecked when requested,
-approved, and executed. Execution analyzes at most 100 stored endpoint
-observations and creates bounded, deduplicated candidates through the existing
-Finding, Evidence, audit, correlation, and risk paths.
-
-Authentication inventory recognizes observed login, logout, session, token,
-password recovery, MFA, API authentication operations, and documented security
-schemes. Session checks use sanitized cookie metadata and can flag missing
-Secure, HttpOnly, or SameSite attributes. Authorization candidates identify
-documented sensitive operations without declared security requirements and
-resource identifier parameters that merit manual object-level access checks.
-No identifiers are substituted and no comparative requests are sent.
-
-Vulnerability candidates use only stored observations: reflected query values
-already present in captured HTML excerpts, database and filesystem error
-signatures, template/interpreter errors, common secret patterns, upload path
-indicators, and parameter names suggesting redirects, server-side fetches,
-filesystem paths, or object identifiers. Observed internal hostnames and paths
-are candidates with redacted evidence. Existing CORS findings remain in
-Phase 14 to avoid duplicate detection. Response excerpts are limited to 2 KiB
-and redact recognizable credentials, tokens, internal hostnames, and paths
-before persistence. Cookie and query parameter values are omitted. No test
-payloads are sent.
-
-Every Phase 15 finding is labeled a candidate requiring manual verification.
-Confidence is recorded as low, medium, or high separately from severity. A
-missing authentication declaration or suspicious parameter name alone does
-not establish exploitability. Logout invalidation, authenticated-versus-
-unauthenticated response comparison, role testing, upload behavior, and full
-reflection context analysis are not automated. No brute force, credential
-testing, ID enumeration, state-changing request, arbitrary URL scan, or command
-execution is provided.
-
-The operations use `POST /projects/{project_id}/security-assessments/{authentication|authorization|vulnerabilities}`,
-with matching `/{job_id}/approve` and `/{job_id}/run` routes, plus the existing
-project-scoped GET assessment listing. No database migration is required.
-Tests are in `tests/test_phase15.py`.
-
-## Final architecture
-
-```text
-PySide6 desktop -> loopback FastAPI -> SQLAlchemy async -> SQLite
-                                         Alembic migrations
+```powershell
+desktop\.venv\Scripts\python.exe -m pip install -r desktop\requirements-packaging.lock
+.\build_windows.ps1
 ```
 
-Desktop and backend are separate processes. The backend owns authorization,
-scope checks, approvals, bounded recon execution, evidence, audit, findings,
-risk, and report generation.
+The executable is `dist\BugBountyWorkbench\BugBountyWorkbench.exe`. Start
+the backend with `start_backend.ps1` before opening the packaged desktop. Basic
+desktop startup does not require internet access.
