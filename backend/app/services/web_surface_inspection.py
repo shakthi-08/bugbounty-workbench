@@ -390,6 +390,17 @@ class WebSurfaceInspectionService:
                     "redirect_chain": redirects, "duration_ms": response["duration_ms"],
                     "inspected_at": datetime.now(timezone.utc).isoformat(),
                 }
+                # Only parse specifications returned by the existing fixed-path
+                # workflow; retain normalized metadata, never the raw document.
+                if (not response["truncated"]
+                        and urlsplit(current_url).path.lower() in {"/openapi.json", "/swagger.json", "/api-docs"}
+                        and "json" in str(headers.get("content-type", "")).lower()
+                        and len(response["body"]) <= 65_536):
+                    try:
+                        from app.services.advanced_web_assessment import extract_api_surface
+                        endpoint["api_spec_observation"] = extract_api_surface(response["body"], current_url)
+                    except (ValueError, TypeError, UnicodeDecodeError):
+                        endpoint["api_spec_observation"] = {"error": "malformed API document", "endpoints": [], "parameters": []}
                 endpoints.append(endpoint)
                 technologies.extend(_fingerprints(current_url, selected_host, headers, response["body"],
                                                   headers.get("content-type")))

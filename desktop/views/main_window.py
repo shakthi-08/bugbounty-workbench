@@ -279,6 +279,17 @@ class MainWindow(QMainWindow):
             self.scan_view.set_correlation(data)
         elif key in {"phase9_created", "phase9_job"}:
             self.scan_view.set_phase9_job(data)
+        elif key in {"phase14_created", "phase14_job"}:
+            self.scan_view.set_phase14_job(data)
+        elif key == "phase14_run":
+            self.scan_view.execution_output.setPlainText(
+                f"Assessment {data.get('status')}: {data.get('endpoints_inspected', 0)} endpoints, "
+                f"{len(data.get('api_documents', []))} API documents, "
+                f"{len(data.get('findings', []))} new findings.\n" + "\n".join(
+                    f"[{row.get('severity', '').upper()} / {row.get('confidence')} confidence] {row.get('title')}"
+                    for row in data.get('findings', [])))
+            self._send("finding_analysis", "GET", f"/projects/{self.current_project['id']}/findings/analysis")
+            self._send("finding_summary", "GET", f"/projects/{self.current_project['id']}/risk-summary")
         elif key == "phase9_run":
             rows = (data or {}).get("findings", [])
             self.scan_view.execution_output.setPlainText("\n".join(

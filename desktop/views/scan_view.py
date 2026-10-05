@@ -100,6 +100,19 @@ class ScanView(BaseView):
         phase9_controls.addWidget(self.phase9_approve_button)
         phase9_controls.addWidget(self.phase9_run_button)
         self.layout.addLayout(phase9_controls)
+        phase14_controls = QHBoxLayout()
+        self.phase14_web_button = QPushButton("Request Web Assessment")
+        self.phase14_api_button = QPushButton("Request API Assessment")
+        self.phase14_approve_button = QPushButton("Approve Assessment")
+        self.phase14_run_button = QPushButton("Run Assessment")
+        for button in (self.phase14_web_button, self.phase14_api_button, self.phase14_approve_button, self.phase14_run_button):
+            phase14_controls.addWidget(button)
+        self.layout.addLayout(phase14_controls)
+        self.phase14_web_button.clicked.connect(lambda: self._phase14_request("web"))
+        self.phase14_api_button.clicked.connect(lambda: self._phase14_request("api"))
+        self.phase14_approve_button.clicked.connect(self._phase14_approve)
+        self.phase14_run_button.clicked.connect(self._phase14_run)
+        for button in (self.phase14_approve_button, self.phase14_run_button): button.setEnabled(False)
         self.layout.addWidget(self.probe_job_selector)
         notice = QLabel("Execution uses registered local tools only after scope review and explicit approval. Subfinder must be installed manually; unavailable tools stay disabled.")
         notice.setObjectName("infoBanner")
@@ -514,6 +527,36 @@ class ScanView(BaseView):
     def _phase9_run(self):
         if getattr(self, "phase9_job", None):
             self._send("phase9_run", "POST", f"/projects/{self.project_selector.currentData()}/security-header-assessments/{self.phase9_job['id']}/run")
+
+    def _phase14_request(self, kind):
+        selected = self.target_selector.currentData()
+        if not self.approval.isChecked() or not isinstance(selected, dict) or not selected.get("asset_id"):
+            self.job_status.setText("Select an existing project asset and review the assessment request.")
+            return
+        project_id = self.project_selector.currentData()
+        self._send("phase14_created", "POST", f"/projects/{project_id}/security-assessments/{kind}",
+            {"asset_id":selected["asset_id"],"requested_by":self.user_name.text().strip() or "local-user"})
+
+    def set_phase14_job(self, job):
+        if not job: return
+        self.phase14_job = job
+        status = job.get("status", "unknown")
+        self.job_status.setText(f"Phase 14 {job.get('assessment', 'assessment')} #{job.get('id')}: {status.upper()}")
+        self.phase14_approve_button.setEnabled(status == "pending_approval" and self.approval.isChecked())
+        self.phase14_run_button.setEnabled(status == "approved")
+
+    def _phase14_approve(self):
+        job = getattr(self, "phase14_job", None)
+        if job:
+            kind = job.get("assessment", "web")
+            self._send("phase14_job", "POST", f"/projects/{self.project_selector.currentData()}/security-assessments/{kind}/{job['id']}/approve",
+                {"approved_by":self.user_name.text().strip() or "local-user"})
+
+    def _phase14_run(self):
+        job = getattr(self, "phase14_job", None)
+        if job:
+            kind = job.get("assessment", "web")
+            self._send("phase14_run", "POST", f"/projects/{self.project_selector.currentData()}/security-assessments/{kind}/{job['id']}/run")
 
     def _approve_job(self):
         if self.current_job and self.approval.isChecked():

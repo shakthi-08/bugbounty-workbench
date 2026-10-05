@@ -154,6 +154,34 @@ provide unrestricted offensive scanning or public SaaS authentication.
 
 ## Final architecture
 
+## Phase 14 advanced web and API assessment
+
+The Scan view can request a web or API assessment for a selected project asset.
+Each request is a SecurityJob, needs explicit approval, and is checked against
+current project scope both when approved and when run. Assessments inspect at
+most 100 stored endpoint observations and create deduplicated, evidence-backed
+candidate findings through the existing Finding and Evidence tables. Web
+checks cover observed session-cookie attributes, CORS, advertised unusual
+methods, HTTP-to-HTTPS observations, and server disclosure. Existing Phase 9
+security-header assessment remains the source for header-gap analysis.
+
+API metadata is normalized from an OpenAPI document already present in stored
+observation metadata; extraction caps the document at 64 KiB, paths at 100,
+and parameters at 50 per operation. Query parameters in observed URLs are
+listed as input-surface metadata. Malformed specifications are safely ignored.
+The Phase 14 API does not accept arbitrary URLs and does not make network
+requests: API documentation must first be captured by the existing approved,
+fixed-path web-surface workflow. Credentials and cookie values are not retained
+by the Phase 14 analyzers. These are conservative candidates requiring manual
+validation, not proof of exploitability. No fuzzing, destructive methods,
+credential attacks, recursive crawl, or command execution is provided.
+
+The new project-scoped endpoints are `POST /projects/{project_id}/security-assessments/{web|api}`,
+`POST /projects/{project_id}/security-assessments/{web|api}/{job_id}/approve`,
+`POST /projects/{project_id}/security-assessments/{web|api}/{job_id}/run`, and
+`GET /projects/{project_id}/security-assessments/{web|api}`. This phase adds no
+database migration. Tests are in `tests/test_phase14.py`.
+
 ```text
 PySide6 desktop -> loopback FastAPI -> SQLAlchemy async -> SQLite
                                          Alembic migrations

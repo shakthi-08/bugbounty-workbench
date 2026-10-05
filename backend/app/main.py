@@ -14,6 +14,7 @@ from app.api.security_assessment import router as security_assessment_router
 from app.api.finding_risk import router as finding_risk_router
 from app.api.assessments import router as assessments_router
 from app.api.recon_correlation import router as recon_correlation_router
+from app.api.advanced_assessment import router as advanced_assessment_router
 
 from app.core.database import engine, verify_database_schema
 from app.services import recon_execution
@@ -49,6 +50,7 @@ app.include_router(security_assessment_router)
 app.include_router(finding_risk_router)
 app.include_router(assessments_router)
 app.include_router(recon_correlation_router)
+app.include_router(advanced_assessment_router)
 
 
 @app.get("/")

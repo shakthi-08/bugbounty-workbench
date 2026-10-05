@@ -202,6 +202,16 @@ class ScanViewTests(unittest.TestCase):
         self.assertFalse(view.phase9_request_button.isEnabled())
         self.assertFalse(hasattr(view, "phase9_url_input"))
 
+    def test_phase14_assessment_uses_approval_states(self):
+        view = ScanView()
+        view.set_projects([{"id": 3, "name": "Authorized project"}], 3)
+        view.approval.setChecked(True)
+        view.set_phase14_job({"id": 44, "assessment": "api", "status": "pending_approval"})
+        self.assertTrue(view.phase14_approve_button.isEnabled())
+        self.assertFalse(view.phase14_run_button.isEnabled())
+        view.set_phase14_job({"id": 44, "assessment": "api", "status": "approved"})
+        self.assertTrue(view.phase14_run_button.isEnabled())
+
 
 if __name__ == "__main__":
     unittest.main()
