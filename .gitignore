@@ -1,0 +1,28 @@
+# Python environments and bytecode
+.venv/
+**/.venv/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+
+# Local runtime data and logs
+backend/*.db
+backend/*.db-*
+*.log
+logs/
+/evidence/
+/exports/
+
+# Test and Windows package artifacts
+.coverage
+.pytest_cache/
+build/
+dist/
+desktop/build/
+desktop/dist/
+*.manifest
