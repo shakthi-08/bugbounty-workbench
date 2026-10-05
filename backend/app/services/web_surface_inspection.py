@@ -390,6 +390,17 @@ class WebSurfaceInspectionService:
                     "redirect_chain": redirects, "duration_ms": response["duration_ms"],
                     "inspected_at": datetime.now(timezone.utc).isoformat(),
                 }
+                if (urlsplit(current_url).path.lower() not in {"/openapi.json", "/swagger.json", "/api-docs"}
+                        and any(kind in str(headers.get("content-type", "")).lower()
+                                for kind in ("text/html", "text/plain", "application/json"))):
+                    try:
+                        from app.services.security_candidate_assessment import detect_excerpt_indicators, sanitize_excerpt
+                        raw_excerpt=response["body"].decode("utf-8", errors="replace")
+                        endpoint["response_excerpt"] = sanitize_excerpt(
+                            raw_excerpt, limit=2048)
+                        endpoint["response_indicators"] = detect_excerpt_indicators(raw_excerpt)
+                    except (ValueError, TypeError):
+                        endpoint["response_excerpt"] = ""
                 # Only parse specifications returned by the existing fixed-path
                 # workflow; retain normalized metadata, never the raw document.
                 if (not response["truncated"]

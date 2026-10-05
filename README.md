@@ -152,8 +152,6 @@ implemented observations and deterministic analysis; exploitability is not
 guaranteed and can require manual validation. This local Workbench does not
 provide unrestricted offensive scanning or public SaaS authentication.
 
-## Final architecture
-
 ## Phase 14 advanced web and API assessment
 
 The Scan view can request a web or API assessment for a selected project asset.
@@ -181,6 +179,51 @@ The new project-scoped endpoints are `POST /projects/{project_id}/security-asses
 `POST /projects/{project_id}/security-assessments/{web|api}/{job_id}/run`, and
 `GET /projects/{project_id}/security-assessments/{web|api}`. This phase adds no
 database migration. Tests are in `tests/test_phase14.py`.
+
+## Phase 15 authentication, authorization, and vulnerability candidates
+
+Phase 15 extends the same approved SecurityJob assessment routes with
+`authentication`, `authorization`, and `vulnerabilities` kinds. The Scan view
+requests one for a selected project asset, then uses the existing approve and
+run controls. Project ownership and current scope are rechecked when requested,
+approved, and executed. Execution analyzes at most 100 stored endpoint
+observations and creates bounded, deduplicated candidates through the existing
+Finding, Evidence, audit, correlation, and risk paths.
+
+Authentication inventory recognizes observed login, logout, session, token,
+password recovery, MFA, API authentication operations, and documented security
+schemes. Session checks use sanitized cookie metadata and can flag missing
+Secure, HttpOnly, or SameSite attributes. Authorization candidates identify
+documented sensitive operations without declared security requirements and
+resource identifier parameters that merit manual object-level access checks.
+No identifiers are substituted and no comparative requests are sent.
+
+Vulnerability candidates use only stored observations: reflected query values
+already present in captured HTML excerpts, database and filesystem error
+signatures, template/interpreter errors, common secret patterns, upload path
+indicators, and parameter names suggesting redirects, server-side fetches,
+filesystem paths, or object identifiers. Observed internal hostnames and paths
+are candidates with redacted evidence. Existing CORS findings remain in
+Phase 14 to avoid duplicate detection. Response excerpts are limited to 2 KiB
+and redact recognizable credentials, tokens, internal hostnames, and paths
+before persistence. Cookie and query parameter values are omitted. No test
+payloads are sent.
+
+Every Phase 15 finding is labeled a candidate requiring manual verification.
+Confidence is recorded as low, medium, or high separately from severity. A
+missing authentication declaration or suspicious parameter name alone does
+not establish exploitability. Logout invalidation, authenticated-versus-
+unauthenticated response comparison, role testing, upload behavior, and full
+reflection context analysis are not automated. No brute force, credential
+testing, ID enumeration, state-changing request, arbitrary URL scan, or command
+execution is provided.
+
+The operations use `POST /projects/{project_id}/security-assessments/{authentication|authorization|vulnerabilities}`,
+with matching `/{job_id}/approve` and `/{job_id}/run` routes, plus the existing
+project-scoped GET assessment listing. No database migration is required.
+Tests are in `tests/test_phase15.py`.
+
+## Final architecture
 
 ```text
 PySide6 desktop -> loopback FastAPI -> SQLAlchemy async -> SQLite

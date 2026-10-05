@@ -212,6 +212,18 @@ class ScanViewTests(unittest.TestCase):
         view.set_phase14_job({"id": 44, "assessment": "api", "status": "approved"})
         self.assertTrue(view.phase14_run_button.isEnabled())
 
+    def test_phase15_controls_use_pending_approval_then_approved_states(self):
+        view=ScanView()
+        self.assertEqual(view.phase15_auth_button.text(), "Authentication")
+        self.assertEqual(view.phase15_access_button.text(), "Authorization Candidates")
+        self.assertEqual(view.phase15_vuln_button.text(), "Vulnerability Candidates")
+        view.approval.setChecked(True)
+        view.set_phase15_job({"id":55,"assessment":"vulnerabilities","status":"pending_approval"})
+        self.assertTrue(view.phase15_approve_button.isEnabled())
+        self.assertFalse(view.phase15_run_button.isEnabled())
+        view.set_phase15_job({"id":55,"assessment":"vulnerabilities","status":"approved"})
+        self.assertTrue(view.phase15_run_button.isEnabled())
+
 
 if __name__ == "__main__":
     unittest.main()

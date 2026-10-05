@@ -281,6 +281,18 @@ class MainWindow(QMainWindow):
             self.scan_view.set_phase9_job(data)
         elif key in {"phase14_created", "phase14_job"}:
             self.scan_view.set_phase14_job(data)
+        elif key in {"phase15_created", "phase15_job"}:
+            self.scan_view.set_phase15_job(data)
+        elif key == "phase15_run":
+            findings=data.get("findings",[])
+            self.scan_view.execution_output.setPlainText(
+                f"Phase 15 {data.get('status')}: {data.get('endpoints_inspected',0)} endpoints, "
+                f"{len(data.get('surfaces',[]))} auth/session surfaces, {len(findings)} new candidates.\n"+
+                "\n".join(f"[{row.get('category')} / {row.get('severity')} / {row.get('confidence')} confidence] "
+                    f"{row.get('title')}\nEvidence: {row.get('evidence')}\nManual verification: {row.get('manual_verification')}"
+                    for row in findings))
+            self._send("finding_analysis", "GET", f"/projects/{self.current_project['id']}/findings/analysis")
+            self._send("finding_summary", "GET", f"/projects/{self.current_project['id']}/risk-summary")
         elif key == "phase14_run":
             self.scan_view.execution_output.setPlainText(
                 f"Assessment {data.get('status')}: {data.get('endpoints_inspected', 0)} endpoints, "

@@ -113,6 +113,23 @@ class ScanView(BaseView):
         self.phase14_approve_button.clicked.connect(self._phase14_approve)
         self.phase14_run_button.clicked.connect(self._phase14_run)
         for button in (self.phase14_approve_button, self.phase14_run_button): button.setEnabled(False)
+        phase15_controls = QHBoxLayout()
+        self.phase15_auth_button = QPushButton("Authentication")
+        self.phase15_access_button = QPushButton("Authorization Candidates")
+        self.phase15_vuln_button = QPushButton("Vulnerability Candidates")
+        self.phase15_approve_button = QPushButton("Approve Phase 15")
+        self.phase15_run_button = QPushButton("Run Phase 15")
+        for button in (self.phase15_auth_button,self.phase15_access_button,self.phase15_vuln_button,
+                       self.phase15_approve_button,self.phase15_run_button): phase15_controls.addWidget(button)
+        self.layout.addWidget(QLabel("Authentication, authorization, and vulnerability candidates (stored observations only)"))
+        self.layout.addLayout(phase15_controls)
+        self.phase15_auth_button.clicked.connect(lambda: self._phase15_request("authentication"))
+        self.phase15_access_button.clicked.connect(lambda: self._phase15_request("authorization"))
+        self.phase15_vuln_button.clicked.connect(lambda: self._phase15_request("vulnerabilities"))
+        self.phase15_approve_button.clicked.connect(self._phase15_approve)
+        self.phase15_run_button.clicked.connect(self._phase15_run)
+        self.phase15_approve_button.setEnabled(False)
+        self.phase15_run_button.setEnabled(False)
         self.layout.addWidget(self.probe_job_selector)
         notice = QLabel("Execution uses registered local tools only after scope review and explicit approval. Subfinder must be installed manually; unavailable tools stay disabled.")
         notice.setObjectName("infoBanner")
@@ -529,7 +546,7 @@ class ScanView(BaseView):
             self._send("phase9_run", "POST", f"/projects/{self.project_selector.currentData()}/security-header-assessments/{self.phase9_job['id']}/run")
 
     def _phase14_request(self, kind):
-        selected = self.target_selector.currentData()
+        _, selected = self._selection()
         if not self.approval.isChecked() or not isinstance(selected, dict) or not selected.get("asset_id"):
             self.job_status.setText("Select an existing project asset and review the assessment request.")
             return
@@ -557,6 +574,36 @@ class ScanView(BaseView):
         if job:
             kind = job.get("assessment", "web")
             self._send("phase14_run", "POST", f"/projects/{self.project_selector.currentData()}/security-assessments/{kind}/{job['id']}/run")
+
+    def _phase15_request(self, kind):
+        _, selected = self._selection()
+        if not self.approval.isChecked() or not isinstance(selected, dict) or not selected.get("asset_id"):
+            self.job_status.setText("Select an existing project asset and review the Phase 15 assessment request.")
+            return
+        project_id = self.project_selector.currentData()
+        self._send("phase15_created", "POST", f"/projects/{project_id}/security-assessments/{kind}",
+            {"asset_id":selected["asset_id"],"requested_by":self.user_name.text().strip() or "local-user"})
+
+    def set_phase15_job(self, job):
+        if not job: return
+        self.phase15_job=job
+        status=job.get("status", "unknown")
+        self.job_status.setText(f"Phase 15 {job.get('assessment', 'security')} #{job.get('id')}: {status.upper()}")
+        self.phase15_approve_button.setEnabled(status=="pending_approval" and self.approval.isChecked())
+        self.phase15_run_button.setEnabled(status=="approved")
+
+    def _phase15_approve(self):
+        job=getattr(self,"phase15_job",None)
+        if job:
+            kind=job.get("assessment","authentication")
+            self._send("phase15_job","POST",f"/projects/{self.project_selector.currentData()}/security-assessments/{kind}/{job['id']}/approve",
+                {"approved_by":self.user_name.text().strip() or "local-user"})
+
+    def _phase15_run(self):
+        job=getattr(self,"phase15_job",None)
+        if job:
+            kind=job.get("assessment","authentication")
+            self._send("phase15_run","POST",f"/projects/{self.project_selector.currentData()}/security-assessments/{kind}/{job['id']}/run")
 
     def _approve_job(self):
         if self.current_job and self.approval.isChecked():

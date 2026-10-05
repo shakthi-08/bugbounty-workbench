@@ -16,6 +16,9 @@ from app.models.scan_profile import ScanProfile
 from app.services.security_authorization import security_authorization
 from app.services.security_audit import write_audit_log
 from app.services.advanced_web_assessment import assess_observation, extract_api_surface, extract_input_surface, safe_endpoint, MAX_ENDPOINTS
+from app.services.security_candidate_assessment import analyze_security_observation
+
+ASSESSMENT_KINDS = {"web", "api", "authentication", "authorization", "vulnerabilities"}
 
 router = APIRouter(tags=["Advanced Security Assessment"])
 
@@ -32,9 +35,9 @@ async def _job(db, project_id, job_id, kind):
     if row is None: raise HTTPException(404, "Assessment job not found.")
     return row
 
-@router.post("/projects/{project_id}/security-assessments/{kind}", description="Queue bounded analysis of stored, project-owned web observations. No arbitrary URL is accepted.")
+@router.post("/projects/{project_id}/security-assessments/{kind}", description="Queue bounded analysis of stored, project-owned web observations. Supported kinds: web, api, authentication, authorization, vulnerabilities. No arbitrary URL is accepted.")
 async def request_assessment(project_id: int, kind: str, data: Request, db: AsyncSession = Depends(get_db)):
-    if kind not in {"web", "api"}: raise HTTPException(404, "Assessment type not found.")
+    if kind not in ASSESSMENT_KINDS: raise HTTPException(404, "Assessment type not found.")
     project, asset = await db.get(Project, project_id), await db.get(Asset, data.asset_id)
     if project is None: raise HTTPException(404, "Project not found.")
     if asset is None or asset.project_id != project_id: raise HTTPException(404, "Asset not found in this project.")
@@ -83,7 +86,7 @@ async def run(project_id: int, kind: str, job_id: int, db: AsyncSession = Depend
     await write_audit_log(db, project_id=project_id, user=job.approved_by or job.requested_by,
         action="advanced_assessment_started", entity_type="security_job", entity_id=job.id,
         target=job.target_snapshot["target"], details={"assessment":kind,"endpoints":len(observations)})
-    findings=[]; api_specs=[]; parameters=[]
+    findings=[]; api_specs=[]; parameters=[]; security_surfaces=[]
     for observation in observations:
         data=observation.normalized_data or {}; url=data.get("url", observation.target)
         evidence_url=safe_endpoint(url)
@@ -95,11 +98,15 @@ async def run(project_id: int, kind: str, job_id: int, db: AsyncSession = Depend
         safe_cookies=[{key:cookie.get(key) for key in ("name","secure","httponly","samesite") if key in cookie}
                       for cookie in (data.get("cookie_security") or [])[:50] if isinstance(cookie,dict)]
         observation_result=SecurityResult(project_id=project_id,job_id=job.id,target=evidence_url,
-            result_type="generic",title="Phase 14 stored web observation assessment",
+            result_type="generic",title=f"{kind.title()} stored security observation assessment",
             summary="Bounded analysis of an existing authorized endpoint observation.",
             normalized_data={"assessment":kind,"asset_id":job.asset_id,"url":evidence_url,
                 "http_status":data.get("http_status"),"server":str(data.get("server") or "")[:120],
                 "security_headers":selected_headers,"cookie_security":safe_cookies})
+        if kind == "vulnerabilities":
+            observation_result.normalized_data={**observation_result.normalized_data,
+                "response_excerpt":str(data.get("response_excerpt") or "")[:2048],
+                "response_indicators":(data.get("response_indicators") or [])[:20]}
         db.add(observation_result); await db.flush()
         db.add(Evidence(project_id=project_id,job_id=job.id,result_id=observation_result.id,
             evidence_type="json",title=observation_result.title,path_reference=evidence_url,
@@ -107,7 +114,7 @@ async def run(project_id: int, kind: str, job_id: int, db: AsyncSession = Depend
         if kind == "web":
             safe_data={**data,"url":evidence_url,"final_url":safe_endpoint(data.get("final_url", evidence_url))}
             candidates=assess_observation(safe_data, project_id, job.asset_id, evidence_url)
-        else:
+        elif kind == "api":
             spec=data.get("api_spec_observation") or data.get("openapi_spec") or data.get("api_spec")
             path=str(url).lower()
             if spec is not None or any(x in path for x in ("openapi", "swagger", "api-docs")):
@@ -130,6 +137,14 @@ async def run(project_id: int, kind: str, job_id: int, db: AsyncSession = Depend
                         "fingerprint":__import__("hashlib").sha256(f"{project_id}:{job.asset_id}:{evidence_url}:api_no_security".encode()).hexdigest()})
             else:
                 candidates=[]
+        else:
+            security_result=analyze_security_observation({**data,"source_result_id":observation.id},
+                project_id=project_id,asset_id=job.asset_id,endpoint=evidence_url,kind=kind)
+            candidates=security_result["candidates"]
+            security_surfaces.extend(security_result["surfaces"])
+            parameters.extend(security_result["parameters"])
+            observation_result.normalized_data={**observation_result.normalized_data,
+                "surfaces":security_result["surfaces"],"parameters":security_result["parameters"][:50]}
         for item in candidates[:max(0, 100-len(findings))]:
             if await db.scalar(select(Finding.id).where(Finding.fingerprint == item["fingerprint"])): continue
             finding=Finding(project_id=project_id,asset_id=job.asset_id,job_id=job.id,title=item["title"],
@@ -139,18 +154,23 @@ async def run(project_id: int, kind: str, job_id: int, db: AsyncSession = Depend
             db.add(finding); await db.flush()
             db.add(Evidence(project_id=project_id,job_id=job.id,result_id=observation_result.id,finding_id=finding.id,evidence_type="json",
                 title=item["title"],description=item["description"],path_reference=item["endpoint"],metadata_json=item["evidence"]))
-            findings.append({"id":finding.id,"title":finding.title,"severity":finding.severity,"confidence":finding.confidence})
+            findings.append({"id":finding.id,"title":finding.title,"severity":finding.severity,
+                "confidence":finding.confidence,"category":finding.category,"endpoint":finding.endpoint,
+                "evidence":item["evidence"],"remediation":finding.remediation,
+                "manual_verification":item.get("manual_verification"),"classification":"candidate"})
     job.status="completed"; job.completed_at=datetime.now(timezone.utc)
     await write_audit_log(db, project_id=project_id,user=job.approved_by or job.requested_by,
         action="advanced_assessment_completed",entity_type="security_job",entity_id=job.id,
-        target=job.target_snapshot["target"],details={"findings":len(findings),"api_documents":len(api_specs),"parameters":len(parameters)})
+        target=job.target_snapshot["target"],details={"assessment":kind,"findings":len(findings),"api_documents":len(api_specs),
+            "surfaces":len(security_surfaces),"parameters":len(parameters)})
     await db.commit()
     return {"job_id":job.id,"status":job.status,"endpoints_inspected":len(observations),
-            "api_documents":api_specs,"parameters":parameters[:MAX_ENDPOINTS*50],"findings":findings}
+            "api_documents":api_specs,"surfaces":security_surfaces[:MAX_ENDPOINTS],
+            "parameters":parameters[:MAX_ENDPOINTS*50],"findings":findings}
 
 @router.get("/projects/{project_id}/security-assessments/{kind}")
 async def list_assessments(project_id: int, kind: str, db: AsyncSession = Depends(get_db)):
-    if kind not in {"web","api"}: raise HTTPException(404,"Assessment type not found.")
+    if kind not in ASSESSMENT_KINDS: raise HTTPException(404,"Assessment type not found.")
     rows=list((await db.scalars(select(SecurityJob).where(SecurityJob.project_id==project_id,
         SecurityJob.parameters["assessment"].as_string()==kind).order_by(SecurityJob.id.desc()).limit(100))).all())
     return [{"id":r.id,"asset_id":r.asset_id,"status":r.status,"created_at":r.created_at,
