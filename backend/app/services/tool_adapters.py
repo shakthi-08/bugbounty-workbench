@@ -187,6 +187,9 @@ class WebSurfaceAdapter(ToolAdapter):
         timeout = parameters.get("timeout", 5)
         if isinstance(timeout, bool) or not isinstance(timeout, int) or not 1 <= timeout <= 8:
             raise ValueError("Web surface timeout must be an integer between 1 and 8 seconds.")
+        max_paths = parameters.get("max_paths", 5)
+        if isinstance(max_paths, bool) or not isinstance(max_paths, int) or not 1 <= max_paths <= 12:
+            raise ValueError("Endpoint discovery is limited to 1–12 fixed candidate paths.")
 
     def build_execution_plan(self, target: str, parameters: dict[str, Any]) -> ExecutionPlan:
         self.validate_parameters(parameters)
@@ -196,9 +199,72 @@ class WebSurfaceAdapter(ToolAdapter):
                              timeout=parameters.get("timeout", 5), target=base_url,
                              metadata={"fixed_paths": True})
 
-    async def inspect(self, target: str, timeout: int, authorize):
+    async def inspect(self, target: str, timeout: int, authorize, max_paths: int = 5):
         from app.services.web_surface_inspection import web_surface_inspection
-        return await web_surface_inspection.inspect(target, timeout, authorize)
+        self.validate_parameters({"timeout": timeout, "max_paths": max_paths})
+        return await web_surface_inspection.inspect(target, timeout, authorize, max_paths=max_paths)
+
+
+class TcpServiceAwarenessAdapter(ToolAdapter):
+    """Small TCP reachability check restricted to explicitly authorized IP assets."""
+    adapter_key = "tcp_service_awareness"
+    tool_key = "tcp_service_awareness"
+    supported_capabilities = frozenset({"network.service_awareness"})
+    ALLOWED_PORTS = (22, 80, 443, 445, 8080, 8443)
+
+    def check_availability(self, executable: str) -> tuple[bool, str]:
+        return (executable == "builtin:python-tcp",
+                "Built-in bounded TCP service awareness is available." if executable == "builtin:python-tcp"
+                else "Service awareness adapter configuration is invalid.")
+
+    def validate_parameters(self, parameters: dict[str, Any]) -> None:
+        timeout = parameters.get("timeout", 2)
+        if isinstance(timeout, bool) or not isinstance(timeout, int) or not 1 <= timeout <= 3:
+            raise ValueError("TCP connection timeout must be between 1 and 3 seconds.")
+        ports = parameters.get("ports", list(self.ALLOWED_PORTS))
+        if (not isinstance(ports, (list, tuple)) or not ports or len(ports) > len(self.ALLOWED_PORTS)
+                or any(isinstance(port, bool) or not isinstance(port, int) or port not in self.ALLOWED_PORTS
+                       for port in ports) or len(set(ports)) != len(ports)):
+            raise ValueError("Ports must be unique members of the fixed common-port allowlist.")
+
+    def build_execution_plan(self, target: str, parameters: dict[str, Any]) -> ExecutionPlan:
+        self.validate_parameters(parameters)
+        try:
+            address = ipaddress.ip_address(target.strip())
+        except ValueError as error:
+            raise ValueError("TCP service awareness requires an explicitly authorized IP asset.") from error
+        return ExecutionPlan(self.tool_key, "builtin:python-tcp", (), timeout=parameters.get("timeout", 2),
+                             target=str(address), metadata={"ports": list(parameters.get("ports", self.ALLOWED_PORTS))})
+
+    async def inspect(self, target: str, timeout: int, ports: list[int], authorize=None):
+        self.build_execution_plan(target, {"timeout": timeout, "ports": ports})
+        observations = []
+        for port in ports:
+            if authorize is not None and not await authorize(target, port):
+                observations.append({"host": target, "port": port, "protocol": "tcp",
+                                    "state": "blocked", "service": None,
+                                    "duration_ms": 0, "error_class": "authorization_rejected"})
+                continue
+            started = asyncio.get_running_loop().time()
+            try:
+                _reader, writer = await asyncio.wait_for(asyncio.open_connection(target, port), timeout)
+                writer.close()
+                try:
+                    await asyncio.wait_for(writer.wait_closed(), 0.25)
+                except (OSError, asyncio.TimeoutError):
+                    pass
+                state, error = "reachable", None
+            except asyncio.TimeoutError:
+                state, error = "not_reachable", "timeout"
+            except OSError as exc:
+                state = "not_reachable"
+                error = "refused" if getattr(exc, "winerror", None) == 10061 or getattr(exc, "errno", None) == 111 else "connection_error"
+            observations.append({"host": target, "port": port, "protocol": "tcp",
+                                 "state": state, "service": {22: "ssh", 80: "http", 443: "https",
+                                 445: "smb", 8080: "http-alt", 8443: "https-alt"}[port],
+                                 "duration_ms": round((asyncio.get_running_loop().time() - started) * 1000),
+                                 "error_class": error})
+        return {"target": target, "observations": observations}
 
 
 class SubfinderAdapter(ToolAdapter):
@@ -218,6 +284,9 @@ class SubfinderAdapter(ToolAdapter):
 
     def validate_parameters(self, parameters: dict[str, Any]) -> None:
         _validate_timeout(parameters)
+        max_results = parameters.get("max_results", 100)
+        if isinstance(max_results, bool) or not isinstance(max_results, int) or not 1 <= max_results <= 100:
+            raise ValueError("Subdomain result limit must be between 1 and 100.")
 
     def build_execution_plan(self, target: str, parameters: dict[str, Any]) -> ExecutionPlan:
         self.validate_parameters(parameters)
@@ -377,3 +446,4 @@ adapter_registry.register(CurlHeadAdapter())
 adapter_registry.register(WebSurfaceAdapter())
 adapter_registry.register(SubfinderAdapter())
 adapter_registry.register(TlsInspectionAdapter())
+adapter_registry.register(TcpServiceAwarenessAdapter())

@@ -214,9 +214,12 @@ async def create_security_job(
     reasons = []
     tls_requested = any(tool.key == "tls_inspector" for tool in tools)
     web_surface_requested = any(tool.key == "web_surface_discovery" for tool in tools)
+    service_requested = any(tool.key == "tcp_service_awareness" for tool in tools)
     if (tls_requested or web_surface_requested) and data.asset_id is None:
         operation = "Web surface discovery" if web_surface_requested else "TLS inspection"
         reasons.append(f"{operation} requires selecting an existing asset in this project.")
+    if service_requested and data.asset_id is None:
+        reasons.append("TCP service awareness requires selecting an existing project asset.")
     if not profile.enabled:
         reasons.append("Selected scan profile is disabled.")
     if any(not module.enabled for module in modules):
@@ -248,7 +251,7 @@ async def create_security_job(
                 )
             except (TypeError, ValueError) as error:
                 reasons.append(f"Subfinder target or parameters are invalid: {error}")
-        elif tool.key in {"windows_nslookup", "curl_head", "tls_inspector", "web_surface_discovery"}:
+        elif tool.key in {"windows_nslookup", "curl_head", "tls_inspector", "web_surface_discovery", "tcp_service_awareness"}:
             adapter = adapter_registry.get_for_tool(tool.key)
             try:
                 if adapter is None:

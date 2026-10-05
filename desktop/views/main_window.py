@@ -44,6 +44,7 @@ class MainWindow(QMainWindow):
         self.scopes: list[dict] | None = None
         self.assets: list[dict] = []
         self.findings: list[dict] = []
+        self._recon_completion_refreshes: set[int] = set()
         self.nav_buttons: dict[str, QPushButton] = {}
 
         self.setWindowTitle("Bug Bounty Workbench")
@@ -179,6 +180,7 @@ class MainWindow(QMainWindow):
         self._request("assets", f"/projects/{project_id}/assets")
         self._request("finding_analysis", f"/projects/{project_id}/findings/analysis")
         self._request("finding_summary", f"/projects/{project_id}/risk-summary")
+        self._request("scan_correlation", f"/projects/{project_id}/recon/correlation")
 
     def _request(self, key: str, path: str, method: str = "GET", payload=None):
         # ScanView signals are ordered (key, method, path, payload).
@@ -268,6 +270,13 @@ class MainWindow(QMainWindow):
             self.scan_view.set_probe_jobs(data)
         elif key == "scan_execution":
             self.scan_view.set_execution(data)
+            job_id = (data or {}).get("job_id")
+            if (data or {}).get("status") == "completed" and job_id not in self._recon_completion_refreshes:
+                self._recon_completion_refreshes.add(job_id)
+                self._request("scan_assets", f"/projects/{self.project_id}/assets")
+                self._request("scan_correlation", f"/projects/{self.project_id}/recon/correlation")
+        elif key == "scan_correlation":
+            self.scan_view.set_correlation(data)
         elif key in {"phase9_created", "phase9_job"}:
             self.scan_view.set_phase9_job(data)
         elif key == "phase9_run":

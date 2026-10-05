@@ -128,7 +128,37 @@ class ScanViewTests(unittest.TestCase):
         view.set_context(None, [{"value": "example.test", "included": True}], [
             {"id": 8, "value": "example.test", "asset_type": "domain"}])
         self.assertTrue(view.create_button.isEnabled())
-        self.assertEqual(view._job_parameters(), {"timeout": 5})
+        self.assertEqual(view._job_parameters(), {"timeout": 5, "max_paths": 12})
+
+    def test_phase13_bounded_controls_and_service_asset_requirement(self):
+        view = ScanView()
+        view.set_projects([{"id": 2, "name": "Local project"}], 2)
+        view.set_context(None, [{"value": "192.0.2.10", "included": True}], [])
+        view.set_scope_decision({"allowed": True, "reason": "Included scope"})
+        view.approval.setChecked(True)
+        view.module_selector.addItem("Service awareness")
+        view.module_selector.item(0).setData(256, 5)
+        view.module_selector.item(0).setCheckState(Qt.CheckState.Checked)
+        view.set_tools([{"id": 14, "key": "tcp_service_awareness", "name": "TCP service awareness",
+                         "enabled": True, "local_only": True, "adapter_available": True}])
+        view.tool_selector.item(0).setCheckState(Qt.CheckState.Checked)
+        self.assertFalse(view.create_button.isEnabled())
+        view.set_context(None, [{"value": "192.0.2.10", "included": True}], [
+            {"id": 17, "value": "192.0.2.10", "asset_type": "ip"}])
+        self.assertTrue(view.create_button.isEnabled())
+        self.assertEqual(view._job_parameters(), {"timeout": 2, "ports": [22, 80, 443, 445, 8080, 8443]})
+        self.assertTrue(any(label.text().startswith("Fixed endpoint path cap")
+                            for label in view.findChildren(QLabel)))
+        view.set_correlation({"groups": [{"hostname": "192.0.2.10", "id": "stable-id",
+            "scopes": [{"id": 2, "value": "192.0.2.10", "included": True}],
+            "assets": [{"id": 17, "type": "ip", "source": "fixture"}],
+            "observations": [{"id": 4, "result_type": "service", "title": "TCP 443 reachable",
+                              "job_id": 9, "evidence_ids": [3]}],
+            "findings": [{"id": 6, "title": "Example finding", "severity": "low"}]}]})
+        text = view.correlation_output.toPlainText()
+        self.assertIn("TCP 443 reachable", text)
+        self.assertIn("evidence [3]", text)
+        self.assertIn("Example finding", text)
 
     def test_web_surface_results_show_confidence_evidence_redirect_and_errors(self):
         view = ScanView()

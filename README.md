@@ -61,8 +61,9 @@ try {
 } finally { Pop-Location }
 ```
 
-Current schema head: `c73f9a21d604`. The Phase 12 work requires no database
-schema changes.
+Current schema head: `d6249ab317e1` (Phase 13). The migration registers the
+built-in TCP service-awareness adapter in the existing tool catalog; it does
+not create a parallel results or evidence schema.
 
 ## Start the application
 
@@ -115,8 +116,33 @@ desktop\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_desktop*
 Projects own their scopes, assets, findings, jobs, assessments, evidence, and
 audit records. Security jobs use the existing authorization and explicit
 approval workflow; target scope is rechecked before execution. Recon remains
-bounded to the implemented DNS, HTTP, TLS, and fixed-path web workflows. The
-desktop exposes no arbitrary URL scanning or shell execution control.
+bounded to DNS, HTTP, TLS, fixed-path endpoint inspection, and TCP service
+awareness. The desktop exposes no arbitrary URL scanning or shell execution
+control.
+
+## Phase 13 reconnaissance
+
+Phase 13 extends the existing approved SecurityJob workflow. Passive Subfinder
+results are capped at 100 (the desktop can select a lower cap), deduplicated,
+checked against current project scope, restricted to descendants of the
+selected root, and materialized as existing domain assets. Subfinder must be
+installed and configured locally; it is a passive source adapter, not a
+wordlist enumerator.
+
+Web endpoint inspection chooses up to 12 paths from a fixed built-in path list.
+It keeps same-host authorization checks, at most two redirects, eight-second
+per-request bounds, a 60-second overall cap, and the existing bounded response
+size. TCP service awareness requires an existing authorized IP asset and checks
+only TCP ports 22, 80, 443, 445, 8080, and 8443, with at most a three-second
+connection timeout. Port requests are individually reauthorized and audited.
+No UDP, ranges, recursive crawling, fuzzing, credentials, or exploitation are
+provided. Observations are not proof of vulnerabilities.
+
+Stored assets, observations, and canonical findings can be inspected through
+`GET /projects/{project_id}/recon/correlation`. The response is a deterministic,
+read-only grouping by observed hostname and retains observation/job provenance;
+it does not create findings or alter Phase 10 risk values. The Scan view exposes
+the same bounded result/path/port controls before job approval.
 
 Evidence and audit use existing database structures. Assessments and JSON,
 Markdown, and HTML reports use stored observations only. Report generation

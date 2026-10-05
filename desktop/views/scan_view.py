@@ -23,6 +23,12 @@ class ScanView(BaseView):
         self.target_selector.setEditable(True)
         self.dns_record_types = QLineEdit("A,AAAA,CNAME,MX,NS,TXT")
         self.dns_record_types.setPlaceholderText("Comma-separated: A, AAAA, CNAME, MX, NS, TXT")
+        self.endpoint_path_limit = QLineEdit("12")
+        self.endpoint_path_limit.setMaxLength(2)
+        self.subdomain_result_limit = QLineEdit("100")
+        self.subdomain_result_limit.setMaxLength(3)
+        self.service_ports = QLineEdit("22,80,443,445,8080,8443")
+        self.service_ports.setPlaceholderText("Allowlist only: 22, 80, 443, 445, 8080, 8443")
         self.tool_selector = QListWidget()
         self.tool_selector.setMaximumHeight(100)
         self.discovered_hosts = QListWidget()
@@ -41,6 +47,9 @@ class ScanView(BaseView):
         form.addRow("Target / asset", self.target_selector)
         form.addRow("Scope status", self.scope_status)
         form.addRow("DNS record types", self.dns_record_types)
+        form.addRow("Subdomain result cap (1–100)", self.subdomain_result_limit)
+        form.addRow("Fixed endpoint path cap (1–12)", self.endpoint_path_limit)
+        form.addRow("TCP ports (fixed allowlist, max 6)", self.service_ports)
         form.addRow("Registered tools (Subfinder runs passively)", self.tool_selector)
         form.addRow("Authorized web observation", self.web_observation_selector)
         self.layout.addLayout(form)
@@ -70,7 +79,7 @@ class ScanView(BaseView):
         workflow.setObjectName("infoBanner")
         workflow.setWordWrap(True)
         self.layout.addWidget(workflow)
-        web_note = QLabel("Web surface discovery and TLS inspection require an existing in-scope project asset. Discovery is limited to five common paths, same-host redirects, small response samples, and conservative evidence-backed fingerprints.")
+        web_note = QLabel("Web surface discovery and TLS inspection require an existing in-scope project asset. Endpoint discovery uses at most 12 fixed paths, same-host redirects (maximum two), small response samples, and an eight-second request timeout. TCP awareness is limited to six fixed ports on an explicitly selected IP asset, with a three-second connection timeout.")
         web_note.setObjectName("infoBanner")
         web_note.setWordWrap(True)
         self.layout.addWidget(web_note)
@@ -101,6 +110,13 @@ class ScanView(BaseView):
         self.execution_output.setPlaceholderText("Job output, results, and evidence references appear here.")
         self.execution_output.setMaximumBlockCount(1000)
         self.layout.addWidget(self.execution_output)
+        self.correlation_button = QPushButton("Refresh Recon Correlation")
+        self.layout.addWidget(self.correlation_button)
+        self.correlation_output = QPlainTextEdit()
+        self.correlation_output.setReadOnly(True)
+        self.correlation_output.setPlaceholderText("Stored assets, observations, evidence references, and findings are grouped by hostname here.")
+        self.correlation_output.setMaximumBlockCount(500)
+        self.layout.addWidget(self.correlation_output)
         self.layout.addStretch(1)
         self.projects = []
         self.scopes = []
@@ -128,6 +144,7 @@ class ScanView(BaseView):
         self.phase9_request_button.clicked.connect(self._phase9_request)
         self.phase9_approve_button.clicked.connect(self._phase9_approve)
         self.phase9_run_button.clicked.connect(self._phase9_run)
+        self.correlation_button.clicked.connect(self._refresh_correlation)
         self.probe_job_selector.currentIndexChanged.connect(self._probe_job_changed)
         self.approval.stateChanged.connect(self._update_buttons)
         self.tool_selector.itemChanged.connect(self._update_buttons)
@@ -327,6 +344,28 @@ class ScanView(BaseView):
         self.execution_output.setPlainText("\n".join(line for line in lines if line))
         self._update_buttons()
 
+    def set_correlation(self, data):
+        if not isinstance(data, dict) or not isinstance(data.get("groups"), list):
+            self.correlation_output.setPlainText("Recon correlation data was not valid.")
+            return
+        lines = []
+        for group in data["groups"]:
+            lines.append(f"{group.get('hostname')}  [{group.get('id')}]")
+            for scope in group.get("scopes", []):
+                lines.append(f"  Scope #{scope.get('id')}: {scope.get('value')} ({'included' if scope.get('included') else 'excluded'})")
+            for asset in group.get("assets", []):
+                lines.append(f"  Asset #{asset.get('id')} ({asset.get('type')}) source={asset.get('source') or 'unspecified'}")
+            for observation in group.get("observations", []):
+                lines.append(f"  {observation.get('result_type')} #{observation.get('id')}: {observation.get('title')} (job #{observation.get('job_id')}, evidence {observation.get('evidence_ids', [])})")
+            for finding in group.get("findings", []):
+                lines.append(f"  Finding #{finding.get('id')} [{finding.get('severity')}]: {finding.get('title')}")
+        self.correlation_output.setPlainText("\n".join(lines) if lines else "No stored recon correlation data for this project.")
+
+    def _refresh_correlation(self):
+        project_id = self.project_selector.currentData()
+        if project_id is not None:
+            self._send("scan_correlation", "GET", f"/projects/{project_id}/recon/correlation")
+
     def set_probe_jobs(self, jobs):
         self.probe_jobs = jobs or []
         self.probe_job_selector.blockSignals(True)
@@ -401,12 +440,30 @@ class ScanView(BaseView):
             row.get("key") for row in self.tools
             if row.get("id") in self._selected_ids(self.tool_selector)
         }
+        parameters = {}
         if "windows_nslookup" in selected_tool_keys:
-            return {"record_types": [value.strip().upper() for value in self.dns_record_types.text().split(",")
-                                    if value.strip()]}
+            parameters["record_types"] = [value.strip().upper() for value in self.dns_record_types.text().split(",")
+                                           if value.strip()]
         if "web_surface_discovery" in selected_tool_keys:
-            return {"timeout": 5}
-        return {}
+            try:
+                max_paths = int(self.endpoint_path_limit.text())
+            except ValueError:
+                max_paths = 12
+            parameters.update({"timeout": 5, "max_paths": max_paths})
+        if "tcp_service_awareness" in selected_tool_keys:
+            ports = []
+            for raw in self.service_ports.text().split(","):
+                raw = raw.strip()
+                if raw.isdigit():
+                    ports.append(int(raw))
+            parameters.update({"timeout": 2, "ports": ports})
+        if "subfinder" in selected_tool_keys:
+            try:
+                max_results = int(self.subdomain_result_limit.text())
+            except ValueError:
+                max_results = 100
+            parameters.update({"timeout": 60, "max_results": max_results})
+        return parameters
 
     def _create_probe_jobs(self):
         if not self.current_job or not self.source_job_id:
@@ -503,7 +560,7 @@ class ScanView(BaseView):
     def _selected_asset_required(self):
         selected_keys = {row.get("key") for row in self.tools
                          if row.get("id") in self._selected_ids(self.tool_selector)}
-        if not selected_keys.intersection({"tls_inspector", "web_surface_discovery"}):
+        if not selected_keys.intersection({"tls_inspector", "web_surface_discovery", "tcp_service_awareness"}):
             return True
         _, selected = self._selection()
         return selected.get("asset_id") is not None

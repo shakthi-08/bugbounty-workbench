@@ -12,6 +12,7 @@ sys.path.insert(0, str(BACKEND))
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from app.core.config import get_data_dir
+from app.core.database import EXPECTED_SCHEMA_REVISION
 from app.api.assessments import _filename
 from app.main import app
 
@@ -34,7 +35,7 @@ class Phase12ConfigurationAndMigrationTests(unittest.TestCase):
     def test_migration_chain_is_single_and_ends_at_expected_head(self):
         config = Config(str(BACKEND / "alembic.ini"))
         scripts = ScriptDirectory.from_config(config)
-        self.assertEqual(scripts.get_heads(), ["c73f9a21d604"])
+        self.assertEqual(scripts.get_heads(), [EXPECTED_SCHEMA_REVISION])
         revisions = list(scripts.walk_revisions())
         ids = [revision.revision for revision in revisions]
         self.assertEqual(len(ids), len(set(ids)))
@@ -68,7 +69,7 @@ class Phase12ConfigurationAndMigrationTests(unittest.TestCase):
                 tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             finally:
                 connection.close()
-            self.assertEqual(revision, "c73f9a21d604")
+            self.assertEqual(revision, EXPECTED_SCHEMA_REVISION)
             self.assertTrue({"projects", "assessments", "findings", "evidence", "security_audit_logs"} <= tables)
 
 

@@ -124,6 +124,11 @@ class Phase3ApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(row["result_type"] == "subdomain" for row in results))
         self.assertTrue(all(row["normalized_data"]["authorization_status"] == "authorized"
                             for row in results))
+        discovered_assets = (await self.client.get(f"/projects/{project_id}/assets")).json()
+        self.assertEqual({asset["value"] for asset in discovered_assets},
+                         {"example.test", "api.example.test"})
+        self.assertTrue(all(asset["source"] == f"security_job:{job_id}"
+                            for asset in discovered_assets))
         evidence = execution.json()["evidence"][0]
         self.assertIn(raw_output, evidence["output"])
         self.assertEqual(hashlib.sha256(Path(evidence["path_reference"]).read_bytes()).hexdigest(),

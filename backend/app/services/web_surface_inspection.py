@@ -11,6 +11,12 @@ from urllib.parse import urljoin, urlsplit, urlunsplit
 
 
 DISCOVERY_PATHS = ("/", "/robots.txt", "/sitemap.xml", "/.well-known/security.txt", "/security.txt")
+# Additional fixed candidates for the explicitly selected Phase 13 endpoint mode.
+# This remains a static allowlist; callers cannot provide arbitrary paths.
+EXTENDED_DISCOVERY_PATHS = DISCOVERY_PATHS + (
+    "/.well-known/change-password", "/openapi.json", "/swagger.json",
+    "/api/", "/health", "/status", "/login",
+)
 MAX_REDIRECTS = 2
 MAX_RESPONSE_BYTES = 65_536
 MAX_HEADER_BYTES = 32_768
@@ -292,9 +298,12 @@ def _fingerprints(url: str, host: str, headers: dict[str, str], body: bytes,
 
 
 class WebSurfaceInspectionService:
-    async def inspect(self, target: str, timeout: int, authorize: Callable[[str, str], Awaitable[tuple[bool, str]]]):
+    async def inspect(self, target: str, timeout: int, authorize: Callable[[str, str], Awaitable[tuple[bool, str]]],
+                      max_paths: int = len(DISCOVERY_PATHS)):
         if isinstance(timeout, bool) or not isinstance(timeout, int) or not 1 <= timeout <= MAX_TIMEOUT_SECONDS:
             raise ValueError(f"Web surface timeout must be between 1 and {MAX_TIMEOUT_SECONDS} seconds.")
+        if isinstance(max_paths, bool) or not isinstance(max_paths, int) or not 1 <= max_paths <= len(EXTENDED_DISCOVERY_PATHS):
+            raise ValueError(f"Endpoint path limit must be between 1 and {len(EXTENDED_DISCOVERY_PATHS)}.")
         base_url = canonical_base_url(target)
         selected_host = _canonical_host(base_url)
         timeout = min(timeout, MAX_TIMEOUT_SECONDS)
@@ -302,7 +311,8 @@ class WebSurfaceInspectionService:
         endpoints = []
         technologies = []
         events = []
-        for path in DISCOVERY_PATHS:
+        path_list = (DISCOVERY_PATHS if max_paths <= len(DISCOVERY_PATHS) else EXTENDED_DISCOVERY_PATHS)[:max_paths]
+        for path in path_list:
             current_url = urljoin(base_url, path.lstrip("/"))
             redirects = []
             response = None

@@ -11,7 +11,7 @@ DATABASE_URL = URL.create(
     "sqlite+aiosqlite",
     database=str(DATABASE_PATH),
 )
-EXPECTED_SCHEMA_REVISION = "c73f9a21d604"
+EXPECTED_SCHEMA_REVISION = "d6249ab317e1"
 
 engine = create_async_engine(
     DATABASE_URL,

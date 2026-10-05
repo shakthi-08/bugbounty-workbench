@@ -21,6 +21,7 @@ from sqlalchemy.orm import selectinload
 from app.core.config import get_data_dir
 from app.core.database import AsyncSessionLocal
 from app.models.evidence import Evidence
+from app.models.asset import Asset
 from app.models.security_job import SecurityJob
 from app.models.assessment_taxonomy import TestModule
 from app.models.scan_profile import ScanProfile, scan_profile_modules
@@ -378,6 +379,17 @@ def parse_output(tool_key: str, target: str, stdout: str,
             return records
         except (ValueError, KeyError, TypeError):
             return []
+    if tool_key == "tcp_service_awareness":
+        try:
+            payload = json.loads(stdout)
+            if not isinstance(payload, dict) or payload.get("target") != target:
+                return []
+            return [{"result_type": "service", "title": f"TCP {item['port']} {item['state']}",
+                     "summary": "Bounded TCP reachability observation.", "data": item}
+                    for item in payload.get("observations", [])[:6]
+                    if isinstance(item, dict) and item.get("host") == target]
+        except (ValueError, TypeError, KeyError):
+            return []
     raise ValueError("No output parser is registered for this tool.")
 
 
@@ -385,7 +397,7 @@ def _normalize_subfinder(stdout: str, tool_key: str) -> list[dict[str, Any]]:
     return _parse_subfinder_output(stdout, tool_key)[0]
 
 
-def _parse_subfinder_output(stdout: str, tool_key: str) -> tuple[list[dict[str, Any]], list[str]]:
+def _parse_subfinder_output(stdout: str, tool_key: str, max_results: int = 100) -> tuple[list[dict[str, Any]], list[str]]:
     from app.services.tool_adapters import _target_host
     hosts = []
     malformed = []
@@ -409,7 +421,8 @@ def _parse_subfinder_output(stdout: str, tool_key: str) -> tuple[list[dict[str, 
         if any(mark in raw for mark in ("/", ":", "@", "\\")):
             malformed.append(raw[:500])
             continue
-        hosts.append(host)
+        if host not in hosts and len(hosts) < max_results:
+            hosts.append(host)
     parsed = [{"result_type": "subdomain", "title": f"Discovered subdomain: {host}",
              "summary": f"Passive subdomain result returned by {tool_key}.",
              "data": {"hostname": host, "source_tool": tool_key,
@@ -545,15 +558,22 @@ async def _execute_job(job_id: int) -> None:
                               action="execution_started", entity_type="security_job",
                               entity_id=job.id, target=target,
                               details={"tool_keys": [row.key for row in tool_rows]})
-        if any(row.key in {"tls_inspector", "web_surface_discovery"} for row in tool_rows):
-            await write_audit_log(
-                db, project_id=job.project_id, user=job.approved_by or job.requested_by,
-                action=("tls_execution_started" if any(row.key == "tls_inspector" for row in tool_rows)
-                        else "web_surface_execution_started"),
-                entity_type="security_job", entity_id=job.id, target=target,
-                details={"port": 443} if any(row.key == "tls_inspector" for row in tool_rows)
-                        else {"fixed_paths": True},
-            )
+        operation_limits = {
+            "tls_inspector": ("tls_execution_started", {"port": 443}),
+            "web_surface_discovery": ("web_surface_execution_started", {
+                "fixed_paths": True, "max_paths": job.parameters.get("max_paths", 5)}),
+            "tcp_service_awareness": ("service_awareness_execution_started", {
+                "ports": job.parameters.get("ports", [22, 80, 443, 445, 8080, 8443]),
+                "per_connection_timeout": min(timeout, 3)}),
+        }
+        for operation_tool in tool_rows:
+            if operation_tool.key in operation_limits:
+                action, limits = operation_limits[operation_tool.key]
+                await write_audit_log(
+                    db, project_id=job.project_id, user=job.approved_by or job.requested_by,
+                    action=action, entity_type="security_job", entity_id=job.id,
+                    target=target, details=limits,
+                )
         await db.commit()
 
         final_state = "completed"
@@ -576,7 +596,12 @@ async def _execute_job(job_id: int) -> None:
                     failure = f"Selected tool '{tool.key}' no longer supports the selected modules."
                 break
             try:
-                tool_timeout = min(timeout, 8) if tool.key == "web_surface_discovery" else timeout
+                if tool.key == "web_surface_discovery":
+                    tool_timeout = min(timeout, 8)
+                elif tool.key == "tcp_service_awareness":
+                    tool_timeout = min(timeout, 3)
+                else:
+                    tool_timeout = timeout
                 adapter_parameters = {**job.parameters, "timeout": tool_timeout,
                                       "executable": tool.executable}
                 plans = adapter.build_execution_plans(target, adapter_parameters)
@@ -631,7 +656,12 @@ async def _execute_job(job_id: int) -> None:
                             return request_decision.allowed, request_decision.reason
 
                     started = datetime.now(timezone.utc)
-                    metadata = await adapter.inspect(plan.target, tool_timeout, authorize_web_request)
+                    max_paths = job.parameters.get("max_paths", 5)
+                    if max_paths == 5:
+                        metadata = await adapter.inspect(plan.target, tool_timeout, authorize_web_request)
+                    else:
+                        metadata = await adapter.inspect(plan.target, tool_timeout, authorize_web_request,
+                                                         max_paths=max_paths)
                     ended = datetime.now(timezone.utc)
                     successful = any(item.get("http_status") is not None
                                      for item in metadata.get("endpoints", []))
@@ -641,6 +671,37 @@ async def _execute_job(job_id: int) -> None:
                     planned_results.append((plan, ProcessResult(
                         json.dumps(metadata, sort_keys=True), "\n".join(errors)[:2000],
                         0 if successful else 1, started, ended, process_status)))
+                elif tool.key == "tcp_service_awareness":
+                    plan = plans[0]
+
+                    async def authorize_tcp_port(request_target: str, port: int):
+                        async with AsyncSessionLocal() as auth_db:
+                            decision = await security_authorization.validate_target(
+                                auth_db, job.project_id, request_target, job.asset_id)
+                            await write_audit_log(
+                                auth_db, project_id=job.project_id,
+                                user=job.approved_by or job.requested_by,
+                                action="authorization_checked", entity_type="security_job",
+                                entity_id=job.id, target=request_target,
+                                details={"allowed": decision.allowed, "reason": decision.reason,
+                                         "port": port, "phase": "service_port_request"})
+                            if decision.allowed:
+                                await write_audit_log(
+                                    auth_db, project_id=job.project_id,
+                                    user=job.approved_by or job.requested_by,
+                                    action="service_port_requested", entity_type="security_job",
+                                    entity_id=job.id, target=request_target,
+                                    details={"port": port, "protocol": "tcp"})
+                            await auth_db.commit()
+                            return decision.allowed
+
+                    started = datetime.now(timezone.utc)
+                    metadata = await adapter.inspect(
+                        plan.target, tool_timeout, job.parameters.get("ports", list(adapter.ALLOWED_PORTS)),
+                        authorize_tcp_port)
+                    ended = datetime.now(timezone.utc)
+                    planned_results.append((plan, ProcessResult(
+                        json.dumps(metadata, sort_keys=True), "", 0, started, ended, "completed")))
                 else:
                  for plan in plans:
                     remaining = min(plan.timeout, timeout - (asyncio.get_running_loop().time() - batch_started))
@@ -684,7 +745,8 @@ async def _execute_job(job_id: int) -> None:
                 malformed_lines = []
                 for plan, process_result in planned_results:
                     if tool.key == "subfinder":
-                        current_parsed, malformed = _parse_subfinder_output(process_result.stdout, tool.key)
+                        current_parsed, malformed = _parse_subfinder_output(
+                            process_result.stdout, tool.key, job.parameters.get("max_results", 100))
                         malformed_lines.extend(malformed)
                     else:
                         current_parsed = parse_output(tool.key, target, process_result.stdout, plan.metadata)
@@ -715,20 +777,26 @@ async def _execute_job(job_id: int) -> None:
                         if hostname:
                             decision = await security_authorization.validate_derived_target(
                                 write_db, current.project_id, hostname)
-                            if decision.allowed:
+                            parent_host = target.lower().rstrip(".")
+                            normalized_hostname = hostname.lower().rstrip(".")
+                            child_only = (item["result_type"] != "subdomain" or
+                                          normalized_hostname == parent_host or
+                                          normalized_hostname.endswith("." + parent_host))
+                            if decision.allowed and child_only:
                                 item["data"]["authorization_status"] = "authorized"
                                 if item["result_type"] == "subdomain":
                                     item["data"]["parent_target"] = target
                                 accepted.append(item)
                             else:
-                                rejected.append({"hostname": hostname, "reason": decision.reason})
+                                reason = decision.reason if not decision.allowed else "Candidate is not a subdomain of the selected root domain."
+                                rejected.append({"hostname": hostname, "reason": reason})
                                 await write_audit_log(
                                     write_db, project_id=current.project_id,
                                     user=current.approved_by or current.requested_by,
                                     action="derived_result_scope_rejected",
                                     entity_type="security_job", entity_id=current.id,
                                     target=hostname,
-                                    details={"reason": decision.reason, "parent_target": target,
+                                    details={"reason": reason, "parent_target": target,
                                              "source_tool": tool.key},
                                 )
                         else:
@@ -736,6 +804,18 @@ async def _execute_job(job_id: int) -> None:
                     for item in accepted:
                         if tool.key == "web_surface_discovery":
                             item["data"]["asset_id"] = current.asset_id
+                        if item["result_type"] == "subdomain":
+                            hostname = item["data"]["hostname"]
+                            current_assets = list((await write_db.scalars(select(Asset).where(
+                                Asset.project_id == current.project_id))).all())
+                            existing_asset = next((asset for asset in current_assets
+                                if asset.value.strip().lower().rstrip(".") == hostname), None)
+                            if existing_asset is None:
+                                existing_asset = Asset(project_id=current.project_id, value=hostname,
+                                                       asset_type="domain", source=f"security_job:{current.id}")
+                                write_db.add(existing_asset)
+                                await write_db.flush()
+                            item["data"]["asset_id"] = existing_asset.id
                         record = SecurityResult(
                             project_id=current.project_id, job_id=current.id,
                             tool_id=tool.id, module_id=tool_module_id or module_id, target=target,
@@ -764,6 +844,7 @@ async def _execute_job(job_id: int) -> None:
                         user=current.approved_by or current.requested_by,
                         action=("subfinder_results_processed" if tool.key == "subfinder" else
                                 "tls_inspection_results_processed" if tool.key == "tls_inspector" else
+                                "service_awareness_results_processed" if tool.key == "tcp_service_awareness" else
                                 "web_surface_results_processed" if tool.key == "web_surface_discovery" else
                                 "tool_results_processed"),
                         entity_type="security_job", entity_id=current.id, target=target,
@@ -851,6 +932,16 @@ async def _execute_job(job_id: int) -> None:
                     user=job.approved_by or job.requested_by,
                     action=("web_surface_execution_completed" if final_state == "completed"
                             else "web_surface_execution_failed"),
+                    entity_type="security_job", entity_id=job.id, target=target,
+                    details={"status": final_state, "error": failure},
+                )
+            if any(item.get("key") == "tcp_service_awareness"
+                   for item in job.profile_snapshot.get("tools", [])):
+                await write_audit_log(
+                    finish_db, project_id=job.project_id,
+                    user=job.approved_by or job.requested_by,
+                    action=("service_awareness_execution_completed" if final_state == "completed"
+                            else "service_awareness_execution_failed"),
                     entity_type="security_job", entity_id=job.id, target=target,
                     details={"status": final_state, "error": failure},
                 )
